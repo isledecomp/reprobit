@@ -154,7 +154,9 @@ jobs:
   native-msvc42:
     name: Native Windows / authenticated MSVC 4.2
     runs-on: windows-2022
-    timeout-minutes: 30
+    # A master push and its release tag run this lane at the same time; the
+    # slower of the two took 30 minutes on 2026-09-06.
+    timeout-minutes: 45
     env:
       PYTHONUNBUFFERED: "1"
     steps:
