@@ -7,7 +7,11 @@ resulting changes like ordinary project files.
 
 A project has a small `reprobit.toml` entry point and strict JSON files under
 `reprobit/`. After `rbit source lock`, `reprobit/source-manifest.json` lists the
-complete source read set and the hash of every file. For normal edits to files
+complete source read set and the hash of every file. When the lock was made
+from explicit `--path` roots, a `selection` list records them so later locks
+without `--path` keep the same roots; a manifest locked from every Git-tracked
+file omits the list, and ReproBit 0.1.5 or newer is needed to read one that
+carries it. For normal edits to files
 already in that set, use `rbit repair .`. For an added, removed, or renamed file,
 run `rbit source preview .` and follow the exact command it prints: `source lock`
 before the first import, or a staged `import cmake --refresh` once CMake records

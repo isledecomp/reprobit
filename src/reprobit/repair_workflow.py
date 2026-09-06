@@ -1464,6 +1464,7 @@ def execute_repair_attempt(
                 selected_paths,
                 progress,
                 seal=True,
+                exact_paths=True,
             )
             apply_source_lock(
                 source_lock,

@@ -184,7 +184,10 @@ rbit source preview .
 `source preview` hashes the proposed Git-tracked read set without writing.
 Repeat `--path` to provide an explicit complete file or tree set instead. It is
 not a filter over the current record: every omitted path is reported as a
-removal. Text output keeps long change lists brief; NDJSON retains every path.
+removal. Without `--path`, preview uses the selection saved by the last lock when
+the manifest has one and every Git-tracked file otherwise; the `selection` line
+and event field say which. Text output keeps long change lists brief; NDJSON
+retains every path.
 
 To add a new file to the reviewed source list—or remove a locked one—preview
 the new list first. `repair` keeps using the exact locked list and never
@@ -229,6 +232,13 @@ successful lock prints the next required step—usually placing the original
 binary, running the first `rbit import cmake .`, or checking `rbit status .`.
 After a CMake import exists, use the refresh command printed by preview rather
 than locking a changed file list separately.
+
+Repeat `--path` to admit only the named files or trees. In a Git worktree the
+selection admits the tracked files under each root, untracked files stay
+invisible, and a root without tracked files is an error. The lock saves those
+roots as `selection` in the source manifest, so later `source preview` and
+`source lock` runs without `--path` reuse the same roots instead of re-admitting
+every tracked file. Name a new `--path` set to replace the saved selection.
 
 <details>
 <summary>Advanced: source-lock safety and generated project records</summary>
@@ -915,8 +925,8 @@ serialized as strings and JSON objects):
 | `report_written` | report | `clean`, `html`, `input`, `total_cost` |
 | `setup` | setup | `backend`, `backend_failures`, `environment_ready`, `next_argv`, `next_command`, `next_instruction`, `profile`, `project_ready`, `readiness`, `toolchain_lock`, `toolchain_lock_created`, `toolchain_root` |
 | `source_exported` | source export | `cleanup_warning`, `interventions`, `path`, `preserved_paths` |
-| `source_locked` | source lock | `entries`, `next_argv`, `next_command`, `next_instruction`, `output`, `producer_graph_invalidated`, `source_manifest_digest`, `transaction_id` |
-| `source_preview` | source preview | `added`, `after_source_manifest_digest`, `authority_checked`, `authority_error`, `before_source_manifest_digest`, `changed`, `checked_overlay_outputs`, `classic_preflight_checked`, `cmake_import_command`, `cmake_refresh_required`, `entries`, `membership_transition_blocked`, `next_argv`, `next_command`, `producer_graph_invalidation_required`, `removed`, `repair_required`, `stale_translation_units`, `unchanged`, `up_to_date` |
+| `source_locked` | source lock | `entries`, `next_argv`, `next_command`, `next_instruction`, `output`, `producer_graph_invalidated`, `selection`, `source_manifest_digest`, `transaction_id` |
+| `source_preview` | source preview | `added`, `after_source_manifest_digest`, `authority_checked`, `authority_error`, `before_source_manifest_digest`, `changed`, `checked_overlay_outputs`, `classic_preflight_checked`, `cmake_import_command`, `cmake_refresh_required`, `entries`, `membership_transition_blocked`, `next_argv`, `next_command`, `producer_graph_invalidation_required`, `removed`, `repair_required`, `selection`, `stale_translation_units`, `unchanged`, `up_to_date` |
 | `source_regenerated` | source regenerate | `applied`, `changes`, `documents`, `next_argv`, `next_command`, `transaction_id` |
 | `state_status` | state status | `cache_active_leases`, `cache_blobs`, `cache_bytes`, `cache_current_records`, `cache_files`, `cache_obsolete_records`, `cache_records`, `cache_stale_leases`, `repair_ledger_bytes`, `repair_ledger_files`, `repair_search_cache_bytes`, `repair_search_cache_files`, `report_bytes`, `report_files`, `root`, `run_bytes`, `run_files`, `runs`, `total_bytes`, `total_files` |
 | `toolchain_locked` | toolchain lock | `input_trees`, `output`, `profile`, `runtime_files`, `tools`, `transaction_id` |

@@ -229,8 +229,14 @@ def build_source_manifest(
     *,
     spec: ProjectSpec | None = None,
     complete: bool = True,
+    selection: Iterable[str] = (),
 ) -> SourceManifestDocument:
-    """Hash an explicit source read set, rejecting redirects and DOS collisions."""
+    """Hash an explicit source read set, rejecting redirects and DOS collisions.
+
+    ``selection`` records the explicit roots the read set was chosen from so a
+    later lock without ``--path`` keeps them; leave it empty for the Git-tracked
+    default.
+    """
 
     resolved = resolve_source_root(root)
     entries = []
@@ -242,6 +248,7 @@ def build_source_manifest(
     return SourceManifestDocument(
         schema_version=3,
         complete=complete,
+        selection=tuple(selection),
         entries=tuple(entries),
     )
 

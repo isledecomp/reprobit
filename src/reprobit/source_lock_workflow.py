@@ -55,15 +55,60 @@ class ActivityProgress(Protocol):
     ) -> AbstractContextManager[Callable[[str], None]]: ...
 
 
-def _explicit_source_paths(root: Path, values: Sequence[str]) -> tuple[str, ...]:
-    paths: list[str] = []
+def _selection_roots(root: Path, values: Sequence[str]) -> tuple[str, ...]:
+    """Canonicalize explicit ``--path`` values into the roots a manifest saves."""
+
+    roots: dict[str, str] = {}
     for value in values:
-        relative = relative_output(root, value)
+        relative = relative_output(root, value).as_posix()
+        if relative in {"", "."}:
+            raise CLIError(
+                "source selection cannot name the project root; omit --path to select "
+                "every Git-tracked file"
+            )
+        folded = relative.casefold()
+        previous = roots.get(folded)
+        if previous is not None and previous != relative:
+            raise CLIError(
+                f"source selection roots collide under DOS case folding: {previous!r}, {relative!r}"
+            )
+        roots[folded] = relative
+    return tuple(sorted(roots.values(), key=lambda item: (item.casefold(), item)))
+
+
+def _explicit_source_paths(root: Path, roots: Sequence[str]) -> tuple[str, ...]:
+    """Expand selection roots into files.
+
+    Inside a Git worktree a root admits the tracked files beneath it, so
+    untracked files stay invisible exactly as they do for the default
+    selection; elsewhere the root is walked on disk.
+    """
+
+    from reprobit.source_lock import SourceLockError, git_tracked_paths, is_git_worktree
+
+    tracked: tuple[str, ...] | None = None
+    if is_git_worktree(root):
+        try:
+            tracked = git_tracked_paths(root)
+        except SourceLockError:
+            tracked = ()
+    paths: list[str] = []
+    for relative in roots:
         candidate = root / relative
         if candidate.is_symlink() or not candidate.exists():
             raise CLIError(f"source lock input is absent or redirected: {relative}")
+        if tracked is not None:
+            prefix = relative + "/"
+            matches = [path for path in tracked if path == relative or path.startswith(prefix)]
+            if not matches:
+                raise CLIError(
+                    f"source selection {relative!r} names no Git-tracked file; "
+                    "run git add first or leave it out"
+                )
+            paths.extend(matches)
+            continue
         if candidate.is_file():
-            paths.append(relative.as_posix())
+            paths.append(relative)
             continue
         for child in sorted(candidate.rglob("*"), key=lambda item: item.as_posix()):
             if child.is_symlink():
@@ -78,12 +123,30 @@ def _build_source_document(
     spec: ProjectSpec,
     values: Sequence[str],
     output: ActivityProgress,
-) -> SourceManifestDocument:
+    *,
+    saved_selection: Sequence[str] = (),
+    exact_paths: bool = False,
+) -> tuple[SourceManifestDocument, tuple[str, ...]]:
+    """Select the read set from ``--path`` values, else the saved selection, else Git.
+
+    With ``exact_paths`` the values are the complete file list already (repair
+    re-pins the locked set this way) and the saved selection is carried forward
+    unchanged.
+    """
+
     from reprobit.source_lock import SourceLockError, build_source_manifest, git_tracked_paths
 
-    if values:
-        paths = _explicit_source_paths(root, values)
+    if exact_paths:
+        selection = tuple(saved_selection)
+        paths: tuple[str, ...] = tuple(values)
+    elif values:
+        selection = _selection_roots(root, values)
+        paths = _explicit_source_paths(root, selection)
+    elif saved_selection:
+        selection = tuple(saved_selection)
+        paths = _explicit_source_paths(root, selection)
     else:
+        selection = ()
         try:
             paths = git_tracked_paths(root)
         except SourceLockError as exc:
@@ -98,7 +161,8 @@ def _build_source_document(
                 "explicitly."
             ) from exc
     with output.activity("checking the project source files"):
-        return build_source_manifest(root, paths, spec=spec, complete=True)
+        document = build_source_manifest(root, paths, spec=spec, complete=True, selection=selection)
+    return document, selection
 
 
 def _load_source_manifest(path: Path) -> SourceManifestDocument:
@@ -283,6 +347,8 @@ class SourceLockPlan:
 
     root: Path
     spec: ProjectSpec
+    # The selection roots in effect: explicit ``--path`` values, else the roots
+    # saved by the last lock; empty when every Git-tracked file is selected.
     selected_paths: tuple[str, ...]
     document: SourceManifestDocument
     current: SourceManifestDocument
@@ -318,8 +384,13 @@ def plan_source_lock(
     *,
     seal: bool = False,
     reconcile_translation_units: bool = False,
+    exact_paths: bool = False,
 ) -> SourceLockPlan:
-    """Inspect one source selection; optionally seal everything needed to apply it."""
+    """Inspect one source selection; optionally seal everything needed to apply it.
+
+    ``exact_paths`` re-pins ``paths`` as the complete file list without
+    expanding or saving them as a selection; repair uses it for the locked set.
+    """
 
     project = root.resolve(strict=True)
     config_preimage: str | None = None
@@ -352,10 +423,17 @@ def plan_source_lock(
     except AuthoritySnapshotError as exc:
         raise CLIError(f"cannot seal source-lock inputs: {exc}") from exc
 
-    document = _build_source_document(project, spec, paths, output)
-    document_digest = source_manifest_digest(document)
     current = _load_source_manifest(safe_project_path(project, spec.layout.source_manifest))
     current_digest = source_manifest_digest(current)
+    document, selection = _build_source_document(
+        project,
+        spec,
+        paths,
+        output,
+        saved_selection=current.selection,
+        exact_paths=exact_paths,
+    )
+    document_digest = source_manifest_digest(document)
     added, removed, changed = _source_changes(current, document)
 
     authority_error: str | None = None
@@ -397,7 +475,7 @@ def plan_source_lock(
     return SourceLockPlan(
         root=project,
         spec=spec,
-        selected_paths=tuple(paths),
+        selected_paths=selection,
         document=document,
         current=current,
         document_digest=document_digest,

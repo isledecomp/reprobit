@@ -241,6 +241,13 @@ def command_init(args: argparse.Namespace, output: CLIOutput) -> int:
     return 0
 
 
+def _selection_phrase(selection: Sequence[str], *, changed: bool) -> str:
+    if not selection:
+        return "every Git-tracked file"
+    origin = "from --path; lock saves it" if changed else "saved in the source manifest"
+    return f"{', '.join(selection)} ({origin})"
+
+
 def _source_preview_message(
     *,
     added: Sequence[str],
@@ -252,19 +259,22 @@ def _source_preview_message(
     authority_checked: bool,
     authority_error: str | None,
     stale_units: Sequence[Mapping[str, Any]],
+    selection: Sequence[str] = (),
+    selection_changed: bool = False,
 ) -> str:
     def concise(values: Sequence[str]) -> str:
         visible, hidden = bounded_items(values)
         rendered = ", ".join(visible)
         return rendered + (f", ... and {hidden} more" if hidden else "")
 
-    if not added and not removed and not changed:
+    if not added and not removed and not changed and not selection_changed:
         lines = [f"Source files are up to date; {count_phrase(entries, 'selected input')}."]
     else:
         lines = [
             f"Source preview: +{len(added)} -{len(removed)} ~{len(changed)}; "
             f"{count_phrase(entries, 'selected input')}"
         ]
+    lines.append("  selection: " + _selection_phrase(selection, changed=selection_changed))
     if added:
         lines.append("  add: " + concise(added))
     if removed:
@@ -349,6 +359,8 @@ def command_source_preview(args: argparse.Namespace, output: CLIOutput) -> int:
         authority_checked=plan.authority_report is not None,
         authority_error=plan.authority_error,
         stale_units=plan.stale_units,
+        selection=plan.selected_paths,
+        selection_changed=plan.document.selection != plan.current.selection,
     )
     if membership_transition_blocked:
         message += (
@@ -368,6 +380,7 @@ def command_source_preview(args: argparse.Namespace, output: CLIOutput) -> int:
         added=added,
         removed=removed,
         changed=changed,
+        selection=list(plan.selected_paths),
         unchanged=len(document.entries) - len(added) - len(changed),
         producer_graph_invalidation_required=plan.graph_invalidation_required,
         checked_overlay_outputs=plan.checked_overlay_outputs,
@@ -404,6 +417,8 @@ def command_source_lock(args: argparse.Namespace, output: CLIOutput) -> int:
     readiness = inspect_project_readiness(root, check_local_environment=True)
     next_instruction = readiness.next_instruction
     message = f"locked {count_phrase(len(plan.document.entries), 'project source input')}"
+    if plan.selected_paths:
+        message += "\n  selection: " + _selection_phrase(plan.selected_paths, changed=False)
     if next_instruction is not None:
         message += f"\nNext: {next_instruction}"
     output.emit(
@@ -411,6 +426,7 @@ def command_source_lock(args: argparse.Namespace, output: CLIOutput) -> int:
         message,
         output=plan.spec.layout.source_manifest,
         entries=len(plan.document.entries),
+        selection=list(plan.selected_paths),
         source_manifest_digest=plan.document_digest.value,
         producer_graph_invalidated=plan.graph_invalidation_required,
         next_instruction=next_instruction,

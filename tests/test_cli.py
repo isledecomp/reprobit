@@ -624,6 +624,87 @@ def test_default_source_lock_omits_intentionally_deleted_tracked_file(
     assert [item["path"] for item in document["entries"]] == ["current.cpp"]
 
 
+def test_source_lock_saves_an_explicit_selection_and_reuses_it_by_default(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _initialize(tmp_path)
+    (tmp_path / "src").mkdir()
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "src/a.cpp").write_bytes(b"int a;\n")
+    (tmp_path / "docs/notes.md").write_bytes(b"# notes\n")
+    subprocess.run(("git", "init", "-q"), cwd=tmp_path, check=True)
+    subprocess.run(
+        ("git", "add", "reprobit.toml", "src/a.cpp", "docs/notes.md"), cwd=tmp_path, check=True
+    )
+    capsys.readouterr()
+
+    assert main(["--format", "ndjson", "source", "lock", str(tmp_path), "--path", "src"]) == 0
+    event = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert event["selection"] == ["src"]
+    document = strict_load(tmp_path / "reprobit/source-manifest.json")
+    assert isinstance(document, dict)
+    assert document["selection"] == ["src"]
+    assert [item["path"] for item in document["entries"]] == ["src/a.cpp"]
+
+    (tmp_path / "src/b.cpp").write_bytes(b"int b;\n")
+    (tmp_path / "docs/more.md").write_bytes(b"# more\n")
+    subprocess.run(("git", "add", "src/b.cpp", "docs/more.md"), cwd=tmp_path, check=True)
+    assert main(["source", "preview", str(tmp_path)]) == 0
+    text = capsys.readouterr().out
+    assert "selection: src (saved in the source manifest)" in text
+    assert main(["--format", "ndjson", "source", "preview", str(tmp_path)]) == 0
+    event = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert event["selection"] == ["src"]
+    assert event["added"] == ["src/b.cpp"]
+    assert event["removed"] == []
+    assert event["next_argv"] == ["rbit", "source", "lock", str(tmp_path)]
+
+    assert main(["source", "lock", str(tmp_path)]) == 0
+    assert "selection: src (saved in the source manifest)" in capsys.readouterr().out
+    document = strict_load(tmp_path / "reprobit/source-manifest.json")
+    assert isinstance(document, dict)
+    assert document["selection"] == ["src"]
+    assert [item["path"] for item in document["entries"]] == ["src/a.cpp", "src/b.cpp"]
+
+    assert main(["source", "lock", str(tmp_path), "--path", "src", "--path", "docs"]) == 0
+    document = strict_load(tmp_path / "reprobit/source-manifest.json")
+    assert isinstance(document, dict)
+    assert document["selection"] == ["docs", "src"]
+    assert [item["path"] for item in document["entries"]] == [
+        "docs/more.md",
+        "docs/notes.md",
+        "src/a.cpp",
+        "src/b.cpp",
+    ]
+
+
+def test_explicit_source_selection_in_a_git_worktree_admits_only_tracked_files(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _initialize(tmp_path)
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/a.cpp").write_bytes(b"int a;\n")
+    (tmp_path / "src/scratch.cpp").write_bytes(b"int scratch;\n")
+    (tmp_path / "loose.cpp").write_bytes(b"int loose;\n")
+    subprocess.run(("git", "init", "-q"), cwd=tmp_path, check=True)
+    subprocess.run(("git", "add", "reprobit.toml", "src/a.cpp"), cwd=tmp_path, check=True)
+
+    assert main(["source", "lock", str(tmp_path), "--path", "src"]) == 0
+    document = strict_load(tmp_path / "reprobit/source-manifest.json")
+    assert isinstance(document, dict)
+    assert [item["path"] for item in document["entries"]] == ["src/a.cpp"]
+    manifest_without_selection = strict_load(tmp_path / "reprobit/source-manifest.json")
+    assert isinstance(manifest_without_selection, dict)
+    capsys.readouterr()
+
+    assert main(["source", "preview", str(tmp_path), "--path", "loose.cpp"]) == 2
+    assert "names no Git-tracked file" in capsys.readouterr().err
+    assert main(["source", "preview", str(tmp_path), "--path", "."]) == 2
+    assert "cannot name the project root" in capsys.readouterr().err
+
+
 def test_fresh_source_preview_does_not_report_the_unreviewed_project_file_as_removed(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -2079,11 +2160,8 @@ def _complete_donor_overlay_project(root: Path, *, canonical_replay: bool = Fals
     header.parent.mkdir()
     header.write_bytes(b"#define VALUE 1\n")
     spec = load_project(root)
-    manifest = build_source_manifest(
-        root,
-        ("include/unit.h", "notes.txt", "reprobit.toml", "src/unit.cpp"),
-        spec=spec,
-    )
+    selection = ("include/unit.h", "notes.txt", "reprobit.toml", "src/unit.cpp")
+    manifest = build_source_manifest(root, selection, spec=spec, selection=selection)
     (root / spec.layout.source_manifest).write_bytes(canonical_json(manifest))
     plan_path = root / spec.layout.build_plan
     plan = BuildPlanDocument.model_validate_json(plan_path.read_bytes()).model_copy(
@@ -6257,7 +6335,11 @@ def test_quiet_leaves_ndjson_events_unchanged() -> None:
         output = CLIOutput("ndjson", machine, StringIO(), heartbeat_seconds=0.01, quiet=quiet)
         with output.producer_activity("build") as progress:
             progress(1, 2, "compile", "unit.one", ProgressKind.CACHE_MISS, "header changed")
-            time.sleep(0.03)
+            # The heartbeat thread only needs to run once; give a loaded
+            # runner real time to schedule it instead of a fixed short sleep.
+            deadline = time.monotonic() + 5.0
+            while '"heartbeat"' not in machine.getvalue() and time.monotonic() < deadline:
+                time.sleep(0.01)
             progress(2, 2, "compile", "unit.two")
         with output.activity("loading project", phase="setup") as update:
             update("checking source files")

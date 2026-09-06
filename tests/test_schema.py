@@ -1326,3 +1326,27 @@ def test_incomplete_source_manifest_can_start_empty_but_complete_cannot() -> Non
             complete=True,
             entries=(),
         )
+
+
+def test_source_manifest_omits_an_empty_selection_from_its_wire_form() -> None:
+    entry = SourceManifestEntry(path="src/a.cpp", size=1, digest=Digest.from_bytes(b"a"))
+    plain = SourceManifestDocument(schema_version=3, complete=True, entries=(entry,))
+    selected = SourceManifestDocument(
+        schema_version=3, complete=True, selection=("src",), entries=(entry,)
+    )
+
+    assert b'"selection"' not in canonical_json(plain)
+    assert b'"selection":["src"]' in canonical_json(selected)
+    assert source_manifest_digest(plain) != source_manifest_digest(selected)
+    assert SourceManifestDocument.model_validate_json(canonical_json(plain)).selection == ()
+    assert SourceManifestDocument.model_validate_json(canonical_json(selected)).selection == (
+        "src",
+    )
+    with pytest.raises(ValidationError, match="collide under DOS case folding"):
+        SourceManifestDocument(
+            schema_version=3, complete=True, selection=("SRC", "src"), entries=(entry,)
+        )
+    with pytest.raises(ValidationError, match="canonically ordered"):
+        SourceManifestDocument(
+            schema_version=3, complete=True, selection=("src", "docs"), entries=(entry,)
+        )

@@ -145,7 +145,7 @@ rbit source preview [-h] [--path PATH] [project]
 
 | Argument | Default | Description |
 |---|---|---|
-| `--path` `PATH` |  | project-relative file or tree to inspect (repeatable; defaults to Git tracked files) |
+| `--path` `PATH` |  | project-relative file or tree to inspect (repeatable; defaults to the selection saved by the last lock, else Git tracked files) |
 
 ### `rbit source export`
 
@@ -177,7 +177,7 @@ rbit source lock [-h] [--path PATH] [--invalidate-producer-graph] [project]
 
 | Argument | Default | Description |
 |---|---|---|
-| `--path` `PATH` |  | project-relative file or tree to admit (repeatable; defaults to Git tracked files) |
+| `--path` `PATH` |  | project-relative file or tree to admit (repeatable, saved for later locks; defaults to the selection saved by the last lock, else Git tracked files) |
 | `--invalidate-producer-graph` |  | remove a stale generated graph in the same transaction after source changes |
 
 ### `rbit source regenerate`

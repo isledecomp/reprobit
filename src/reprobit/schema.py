@@ -15,9 +15,11 @@ from typing import Annotated, Any, Literal, Self, TypeAlias
 from pydantic import (
     ConfigDict,
     Field,
+    SerializerFunctionWrapHandler,
     TypeAdapter,
     WithJsonSchema,
     field_validator,
+    model_serializer,
     model_validator,
 )
 from pydantic import JsonValue as PydanticJsonValue
@@ -373,7 +375,27 @@ class SourceManifestDocument(StrictModel):
     schema_version: Literal[3]
     algorithm: Literal["portable-source-v1"] = "portable-source-v1"
     complete: bool
+    # The explicit ``--path`` roots the lock was made from, so later locks
+    # without ``--path`` keep the same roots.  Empty means every Git-tracked
+    # file, and an empty selection is omitted from the wire form so manifests
+    # written before this field existed keep their bytes and digests.
+    selection: tuple[RelativePath, ...] = ()
     entries: tuple[SourceManifestEntry, ...]
+
+    @field_validator("selection")
+    @classmethod
+    def validate_selection(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        for item in value:
+            checked = _check_relative_path(item)
+            if "\\" in checked or PurePosixPath(checked).as_posix() != checked:
+                raise ValueError("source selection roots must be canonical POSIX paths")
+        ordered = sorted(value, key=lambda item: (item.casefold(), item))
+        if list(value) != ordered:
+            raise ValueError("source selection roots must be canonically ordered")
+        folded = [item.casefold() for item in value]
+        if len(folded) != len(set(folded)):
+            raise ValueError("source selection roots collide under DOS case folding")
+        return value
 
     @model_validator(mode="after")
     def entries_are_canonical(self) -> SourceManifestDocument:
@@ -386,6 +408,13 @@ class SourceManifestDocument(StrictModel):
         if len(folded) != len(set(folded)):
             raise ValueError("source manifest paths collide under DOS case folding")
         return self
+
+    @model_serializer(mode="wrap")
+    def _omit_empty_selection(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        rendered: dict[str, Any] = handler(self)
+        if not self.selection:
+            rendered.pop("selection", None)
+        return rendered
 
 
 def source_manifest_digest(document: SourceManifestDocument) -> Digest:

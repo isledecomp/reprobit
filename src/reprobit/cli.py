@@ -680,7 +680,10 @@ def _parser() -> argparse.ArgumentParser:
         "--path",
         action="append",
         default=[],
-        help="project-relative file or tree to inspect (repeatable; defaults to Git tracked files)",
+        help=(
+            "project-relative file or tree to inspect (repeatable; defaults to the "
+            "selection saved by the last lock, else Git tracked files)"
+        ),
     )
     source_preview.set_defaults(handler=command_source_preview)
     source_export = _subcommand(
@@ -704,7 +707,10 @@ def _parser() -> argparse.ArgumentParser:
         "--path",
         action="append",
         default=[],
-        help="project-relative file or tree to admit (repeatable; defaults to Git tracked files)",
+        help=(
+            "project-relative file or tree to admit (repeatable, saved for later locks; "
+            "defaults to the selection saved by the last lock, else Git tracked files)"
+        ),
     )
     source_lock.add_argument(
         "--invalidate-producer-graph",
