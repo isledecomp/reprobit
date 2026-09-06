@@ -217,10 +217,19 @@ pre > code { white-space: pre; }
 .chart figcaption { margin-bottom: .85rem; }
 .chart figcaption strong { display: block; }
 .chart figcaption span { color: var(--muted); font-size: .88rem; }
-.bar-list { display: grid; gap: .62rem; }
-.bar-row {
+/* Every row shares the list's column tracks (subgrid), so all bar tracks
+   start and end on the same lines whatever the widths of the labels and
+   values in the other rows. */
+.bar-list {
   display: grid;
   grid-template-columns: minmax(8rem, 1.2fr) minmax(6rem, 2fr) auto;
+  gap: .62rem .7rem;
+}
+.bar-list > .empty { grid-column: 1 / -1; }
+.bar-row {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
   align-items: center;
   gap: .7rem;
 }
@@ -368,12 +377,20 @@ tbody tr:hover { background: var(--accent-soft); }
   .section-heading, .table-tools { align-items: stretch; flex-direction: column; }
   details.advanced > summary { grid-template-columns: auto minmax(0, 1fr); gap: .2rem .7rem; }
   .summary-meta { grid-column: 2; text-align: left; }
-  .bar-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .bar-list { grid-template-columns: minmax(0, 1fr) auto; }
+  .bar-row { grid-template-rows: auto auto; }
   .bar-label span { white-space: normal; }
+  .bar-label { grid-column: 1; grid-row: 1; }
   .bar-track { grid-column: 1 / -1; grid-row: 2; }
   .bar-value { grid-column: 2; grid-row: 1; }
   .identity-list { grid-template-columns: 1fr; gap: .1rem; }
   .identity-list dd { margin-bottom: .55rem; }
+}
+@supports not (grid-template-columns: subgrid) {
+  .bar-row { grid-template-columns: minmax(8rem, 1.2fr) minmax(6rem, 2fr) 6.5rem; }
+  @media (max-width: 680px) {
+    .bar-row { grid-template-columns: minmax(0, 1fr) 6.5rem; }
+  }
 }
 @media print {
   body { background: white; }
