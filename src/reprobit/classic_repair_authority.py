@@ -42,6 +42,7 @@ _PROJECT_LAYOUT_GENERATORS = frozenset(
         "fwd_run",
         "fwd_seq",
         "lines",
+        "pragma_optimize",
         "proto",
         "typedef",
     }

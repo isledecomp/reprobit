@@ -122,6 +122,11 @@ def _render_sequence(
     return b"".join(grid), _Layout()
 
 
+# The only optimizer directive pair the overlay may seat: it turns frame-pointer
+# omission off before one definition and restores the command-line options after it.
+_OPTIMIZE_PRAGMA_PAIRS = frozenset({("y", "off"), ("", "on")})
+
+
 def _render_generator(
     raw: object,
     context: str,
@@ -205,6 +210,13 @@ def _render_generator(
         else:
             _fail(f"{context}.style is outside the closed enum")
         return _seat_fragment(kind, semantic, layout)
+    if kind == "pragma_optimize":
+        layout = _generator_contract(value, context, required={"flags", "state"})
+        flags, state = value.get("flags"), value.get("state")
+        if (flags, state) not in _OPTIMIZE_PRAGMA_PAIRS:
+            _fail(f"{context} optimizer directive is outside the closed enum")
+        directive_line = f'#pragma optimize("{flags}", {state})\n'.encode()
+        return _seat_fragment(kind, directive_line, layout)
     if kind == "empty_scopes":
         layout = _generator_contract(value, context, required={"scope_count"})
         count = _integer(

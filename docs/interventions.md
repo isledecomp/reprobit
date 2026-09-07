@@ -135,7 +135,7 @@ simulation-proved region rewrites.
 
 | Family | Contract and meaning |
 | --- | --- |
-| `source_overlay_graph` | Contract `classic.source-overlay-ancestry.v1`, obligations `overlay.*`; rendered bytes may enter the primary compiler seat with origin `certified-project-overlay` after the closed typed-source proof (see `ClassicRecipeFamily` docstring, `classic.project_overlay`). |
+| `source_overlay_graph` | Contract `classic.source-overlay-ancestry.v1`, obligations `overlay.*`; rendered bytes may enter the primary compiler seat with origin `certified-project-overlay` after the closed typed-source proof (see `ClassicRecipeFamily` docstring, `classic.project_overlay`). Besides declaration and layout generators, an `insert` at a closed declaration boundary may seat the `pragma_optimize` generator, whose only admitted forms are `#pragma optimize("y", off)` and `#pragma optimize("", on)`: they carry compile state the retail build evidently had for one definition (a real frame pointer) that no source construct reproduces; they join the counterfactual baseline like declaration and layout leaves, and the exact-byte verify proves their effect. |
 | `image_metadata` | Contract `classic.image-metadata.v1`; obligations `image.candidate_only`, `image.logic_bytes_unchanged`, `image.metadata_only`. |
 | `image_link_order` | Contract `classic.image-link-order.v1`; obligations `image.candidate_only`, `image.import_binding_preserved`, `image.semantic_equivalence`. |
 | `image_binary_repack` | Contract `classic.image-binary-repack.v1`; obligations `image.byte_conservation`, `image.candidate_only`, `image.fixups_preserved`, `image.semantic_equivalence`. |

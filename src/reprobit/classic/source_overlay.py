@@ -940,6 +940,24 @@ def _validate_project_overlay_sources(
                             )
                         selected_counterfactual_leaves.add(leaf_key)
                         continue
+                    if kind == "pragma_optimize":
+                        # A closed optimizer directive emits nothing itself; like a
+                        # declaration carrier it only changes how the compiler treats
+                        # what follows (here the frame-pointer state of one definition,
+                        # which also moves its FPO record sections), so it belongs to the
+                        # counterfactual baseline rather than to the code-pair audit that
+                        # bounds source refactors.  The exact-byte verify proves its effect.
+                        if claim is not None or action != "insert":
+                            raise ClassicSemanticError("optimizer directive seat is unsafe")
+                        if clean_payload is None or not anchor_offsets:
+                            raise ClassicSemanticError("optimizer directive lacks a source seat")
+                        _require_declaration_seat(
+                            clean_payload,
+                            min(anchor_offsets),
+                            operation=operation_receipt.operation_id,
+                        )
+                        selected_counterfactual_leaves.add(leaf_key)
+                        continue
                     if kind == "size_asserts":
                         if claim is not None or action != "insert":
                             raise ClassicSemanticError("compile-time assertion seat is unsafe")

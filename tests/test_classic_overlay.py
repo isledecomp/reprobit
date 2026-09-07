@@ -805,3 +805,25 @@ def test_project_member_probes_carry_explicit_return_types() -> None:
     collect(document)
     assert return_types
     assert len(set(return_types)) == 1
+
+
+def test_pragma_optimize_generator_renders_only_the_closed_directive_pair() -> None:
+    assert (
+        render_classic_overlay_generator({"k": "pragma_optimize", "flags": "y", "state": "off"})
+        == b'#pragma optimize("y", off)\n'
+    )
+    assert (
+        render_classic_overlay_generator(
+            {"k": "pragma_optimize", "flags": "", "state": "on", "lines": 2, "at": [1]}
+        )
+        == b'#pragma optimize("", on)\n\n'
+    )
+    for flags, state in (("y", "on"), ("", "off"), ("g", "off"), ("y", "of")):
+        with pytest.raises(SourceEditError, match="closed enum"):
+            render_classic_overlay_generator(
+                {"k": "pragma_optimize", "flags": flags, "state": state}
+            )
+    with pytest.raises(SourceEditError, match="fields differ"):
+        render_classic_overlay_generator(
+            {"k": "pragma_optimize", "flags": "y", "state": "off", "text": "x"}
+        )

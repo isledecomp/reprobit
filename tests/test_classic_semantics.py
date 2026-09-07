@@ -8121,3 +8121,104 @@ def test_hidden_include_directive_cannot_root_a_generated_carrier(
 
     with pytest.raises(ClassicSemanticError, match="roots a carrier definition"):
         prove_source_overlay_semantics(bundle, graph, snapshot, semantic_contracts={})
+
+
+def _pragma_span_fixture() -> tuple[bytes, bytes, list[dict[str, object]]]:
+    clean = (
+        b"int before(int value)\n{\n\treturn value + 1;\n}\n\n"
+        b"// FUNCTION: SAMPLE 0x10001020\nint framed(int value)\n{\n\treturn value * 2;\n}\n\n"
+        b"int after(int value)\n{\n\treturn value;\n}\n"
+    )
+    effective = clean.replace(
+        b"int framed(int value)\n", b'#pragma optimize("y", off)\nint framed(int value)\n'
+    ).replace(b"\nint after(int value)\n", b'\n#pragma optimize("", on)\n\nint after(int value)\n')
+    operations: list[dict[str, object]] = [
+        {
+            "op": "insert",
+            "anchor": {
+                "ctx": _seat_digest(["}", "<SEAT>", "int", "framed", "(", "int", "value", ")"]),
+                "b": 1,
+                "a": 6,
+                "at": "before_token",
+            },
+            "gen": {"k": "pragma_optimize", "flags": "y", "state": "off"},
+        },
+        {
+            "op": "insert",
+            "anchor": {
+                "ctx": _seat_digest(["}", "<SEAT>", "int", "after", "(", "int", "value", ")"]),
+                "b": 1,
+                "a": 6,
+                "line_before": Digest.from_bytes(b"").value,
+                "line_after": Digest.from_bytes(b"int after(int value)").value,
+            },
+            "gen": {"k": "pragma_optimize", "flags": "", "state": "on", "lines": 2, "at": [1]},
+        },
+    ]
+    return clean, effective, operations
+
+
+def test_pragma_optimize_span_is_admitted_at_declaration_boundaries(tmp_path: Path) -> None:
+    from reprobit.classic.overlay_document import render_classic_overlay_proposal
+
+    clean, effective, operations = _pragma_span_fixture()
+    rendered = render_classic_overlay_proposal(
+        [
+            {
+                "path": "src/unit.cpp",
+                "clean": Digest.from_bytes(clean).value,
+                "effective": "0" * 64,
+                "ops": operations,
+            }
+        ],
+        {"src/unit.cpp": clean},
+    ).outputs["src/unit.cpp"]
+    assert rendered == effective
+    bundle, graph, overlay, snapshot = _certified_project_overlay_authority(
+        tmp_path, clean=clean, effective=effective, operations=operations
+    )
+
+    result = prove_source_overlay_semantics(bundle, graph, snapshot, semantic_contracts={})
+
+    assert result.proofs[overlay.id].family == ClassicRecipeFamily.SOURCE_OVERLAY_GRAPH
+
+
+def test_pragma_optimize_rejects_claims_and_statement_seats(tmp_path: Path) -> None:
+    clean, effective, operations = _pragma_span_fixture()
+    claimed = {
+        "schema": 1,
+        "bindings": [
+            {
+                "kind": "logical_header",
+                "leaf": 0,
+                "logical_path": "src/unit.h",
+                "operation": "src/unit.cpp#0",
+            }
+        ],
+    }
+    bundle, graph, _overlay, snapshot = _certified_project_overlay_authority(
+        tmp_path, clean=clean, effective=effective, operations=operations, semantic_claims=claimed
+    )
+    with pytest.raises(ClassicSemanticError, match="optimizer directive seat is unsafe"):
+        prove_source_overlay_semantics(bundle, graph, snapshot, semantic_contracts={})
+
+    inside = clean.replace(
+        b"\treturn value * 2;\n", b'\treturn value #pragma optimize("", on)\n* 2;\n'
+    )
+    statement_seat = [
+        {
+            "op": "insert",
+            "anchor": {
+                "ctx": _seat_digest(["return", "value", "<SEAT>", "*", "2", ";"]),
+                "b": 2,
+                "a": 3,
+                "at": "before_token",
+            },
+            "gen": {"k": "pragma_optimize", "flags": "", "state": "on"},
+        }
+    ]
+    bundle, graph, _overlay, snapshot = _certified_project_overlay_authority(
+        tmp_path / "inside", clean=clean, effective=inside, operations=statement_seat
+    )
+    with pytest.raises(ClassicSemanticError, match="closed declaration boundary"):
+        prove_source_overlay_semantics(bundle, graph, snapshot, semantic_contracts={})
