@@ -1005,3 +1005,128 @@ def test_declared_symbol_kind_pairs_file_statics_by_base_name() -> None:
     assert declared_symbol_kind("?Timer@@YAPAVMxTimer@@XZ") is None
     assert declared_symbol_kind("$S1") is None
     assert declared_symbol_kind("x$Sabc") is None
+
+
+def _debug_s_digest(payload: bytes) -> str:
+    from reprobit.classic.coff import _comdat_child
+
+    coff = CoffObject(payload)
+    primary = coff.function_section(SYMBOL)
+    return sha256(bytes(coff_body(coff, _comdat_child(coff, primary, ".debug$S")))).hexdigest()
+
+
+def _composed_receipt_values(seed: bytes, donor: bytes, retail: str) -> dict[str, object]:
+    """A composed-rewriting receipt whose observations are all stale but whose
+    bodies, decisions and retail goal are current."""
+
+    fresh = _seat_receipt_values(seed, donor)
+    return {
+        "composed_rewriting.expected_changed_offsets": [3, 4],
+        "composed_rewriting.expected_code_symbol_references": [],
+        "composed_rewriting.expected_external_entries": [4],
+        "composed_rewriting.expected_image_debug_s_sha256": "3" * 64,
+        "composed_rewriting.expected_instruction_count": 7,
+        "composed_rewriting.expected_procedure_range": [len(_body(seed)), 0, len(_body(seed))],
+        "composed_rewriting.expected_seed_debug_s_sha256": "3" * 64,
+        "expected_body_sha256": retail,
+        "expected_changed_offsets": [3, 4],
+        "expected_closure": [".debug$F", ".debug$S"],
+        "expected_comdat_count": fresh["expected_comdat_count"],
+        "expected_donor_body_sha256": fresh["expected_donor_body_sha256"],
+        "expected_donor_line_count": fresh["expected_donor_line_count"],
+        "expected_donor_metadata_sha256": "1" * 64,
+        "expected_function_count": fresh["expected_function_count"],
+        "expected_relocation_count": fresh["expected_relocation_count"],
+        "expected_section_count": fresh["expected_section_count"],
+        "expected_section_number": fresh["expected_section_number"],
+        "expected_seed_body_sha256": fresh["expected_seed_body_sha256"],
+        "expected_seed_line_count": fresh["expected_seed_line_count"],
+        "expected_seed_metadata_sha256": "2" * 64,
+        "retail_oracle": {
+            "address": "0x10000000",
+            "image": "X.DLL",
+            "length": 1,
+            "verdict": "MATCH",
+        },
+    }
+
+
+def test_composed_rewriting_restates_observations_around_an_identical_body() -> None:
+    seed = coff_fixture.make_coff()
+    donor = coff_fixture.make_coff()  # the witness reproduces the seed body exactly
+    intervention = _intervention(ClassicRecipeFamily.RETAIL_EXACT_COMPOSED_REWRITING)
+    retail = sha256(_body(seed)).hexdigest()
+    fresh = _seat_receipt_values(seed, donor)
+    receipt = _receipt(intervention, _composed_receipt_values(seed, donor, retail))
+
+    class _Composing:
+        constraints: dict[str, object] | None = None
+
+        def dispatch(self, _intervention: object, materials: ClassicDispatchMaterials) -> Any:
+            self.constraints = dict(materials.candidate_constraints or {})
+            return ClassicCandidate(seed, {}, Digest(value=sha256(seed).hexdigest()), {}, {}, {})  # type: ignore[arg-type]
+
+    composer = _Composing()
+    result = repair_measured_pins(
+        intervention,
+        receipt,
+        ClassicDispatchMaterials(seed_object=seed, donor_object=donor),
+        dispatcher=cast(ClassicFamilyDispatcher, composer),
+    )
+
+    assert result.changed_keys == (
+        "composed_rewriting.expected_image_debug_s_sha256",
+        "composed_rewriting.expected_seed_debug_s_sha256",
+        "expected_donor_metadata_sha256",
+        "expected_seed_metadata_sha256",
+    )
+    values = result.receipt.expected_values
+    assert values["expected_seed_metadata_sha256"] == fresh["expected_seed_metadata_sha256"]
+    assert values["expected_donor_metadata_sha256"] == fresh["expected_donor_metadata_sha256"]
+    assert values["composed_rewriting.expected_seed_debug_s_sha256"] == _debug_s_digest(seed)
+    assert values["composed_rewriting.expected_image_debug_s_sha256"] == _debug_s_digest(seed)
+    # The transformation program, its derived offset sets and the retail goal
+    # are decisions: none of them moves.
+    assert values["composed_rewriting.expected_changed_offsets"] == [3, 4]
+    assert values["composed_rewriting.expected_instruction_count"] == 7
+    assert values["composed_rewriting.expected_external_entries"] == [4]
+    assert values["expected_changed_offsets"] == [3, 4]
+    assert values["expected_body_sha256"] == retail
+    assert receipt.expected_values["expected_seed_metadata_sha256"] == "2" * 64
+
+
+def test_composed_rewriting_refuses_a_seed_body_that_moved() -> None:
+    seed, donor = _objects()  # donor body differs from the seed's by one byte
+    intervention = _intervention(ClassicRecipeFamily.RETAIL_EXACT_COMPOSED_REWRITING)
+    values = _composed_receipt_values(seed, donor, sha256(_body(seed)).hexdigest())
+    values["expected_seed_body_sha256"] = "4" * 64
+    receipt = _receipt(intervention, values)
+
+    with pytest.raises(MeasuredPinRepairError) as error:
+        repair_measured_pins(
+            intervention,
+            receipt,
+            ClassicDispatchMaterials(seed_object=seed, donor_object=donor),
+        )
+
+    assert "expected_seed_body_sha256" in str(error.value)
+    assert "by offset" in str(error.value)
+
+
+def test_composed_rewriting_refuses_to_restate_a_mapped_debug_stream() -> None:
+    seed = coff_fixture.make_coff()
+    donor = coff_fixture.make_coff()
+    intervention = _intervention(ClassicRecipeFamily.RETAIL_EXACT_COMPOSED_REWRITING)
+    values = _composed_receipt_values(seed, donor, sha256(_body(seed)).hexdigest())
+    # A program that maps the stream declares an image digest of its own.
+    values["composed_rewriting.expected_image_debug_s_sha256"] = "5" * 64
+    receipt = _receipt(intervention, values)
+
+    with pytest.raises(MeasuredPinRepairError) as error:
+        repair_measured_pins(
+            intervention,
+            receipt,
+            ClassicDispatchMaterials(seed_object=seed, donor_object=donor),
+        )
+
+    assert "maps it" in str(error.value)

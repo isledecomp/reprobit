@@ -197,6 +197,36 @@ _SAFE_CROSS_TU_RESIZE_PIN_KEYS = frozenset(
     }
 )
 
+# Composed rewriting states its whole transformation program -- windows, region
+# rewrites, bijections and exchanges -- in the intervention's own parameters,
+# and every region it names is a byte range of the SEED body.  So this repair
+# holds both bodies immutable: it refuses unless the fresh compile produced
+# exactly the same seed and witness bytes, and then restates only how the
+# compiler named and seated that identical body.  The retail goal, the closure,
+# the changed-offset sets, the instruction count, the procedure range and the
+# external entries are all derived from those bytes and never move.  The
+# ordinary producer replays every obligation against the refreshed observations
+# afterwards, and the composed body must be the retail body again.
+_SAFE_COMPOSED_REWRITING_PIN_KEYS = frozenset(
+    {
+        "composed_rewriting.expected_code_symbol_references",
+        "composed_rewriting.expected_image_debug_s_sha256",
+        "composed_rewriting.expected_seed_debug_s_sha256",
+        "expected_comdat_count",
+        "expected_donor_line_count",
+        "expected_donor_metadata_sha256",
+        "expected_donor_section_count",
+        "expected_donor_section_number",
+        "expected_function_count",
+        "expected_relocation_count",
+        "expected_section_count",
+        "expected_section_number",
+        "expected_seed_line_count",
+        "expected_seed_metadata_sha256",
+        "retail_relocations",
+    }
+)
+
 _SEAT_OBSERVATION_FAMILIES: dict[ClassicRecipeFamily, frozenset[str]] = {
     ClassicRecipeFamily.RETAIL_EXACT_WEB_RECOLOUR: _SAFE_WEB_RECOLOUR_PIN_KEYS,
     ClassicRecipeFamily.RETAIL_EXACT_INSTRUCTION_MOSAIC: _SAFE_INSTRUCTION_MOSAIC_PIN_KEYS,
@@ -443,18 +473,20 @@ def _renumbered_code_symbol_references(
     receipt: ClassicProofReceipt,
     donor: CoffObject,
     donor_primary: CoffSection,
+    *,
+    key: str = "donor_rewriting.expected_code_symbol_references",
 ) -> list[NativeJsonValue] | None:
     """Follow renumbered compiler locals in a rewriting's debug closure references.
 
-    ``donor_rewriting.expected_code_symbol_references`` lists, per closure
-    child, the code symbols its relocations name and the offsets those symbols
-    sit at.  After a declaration change the compiler restarts its ``$L``/``$T``
-    serials, so the same reference carries a new name at the very same offset.
-    Only that renumbering is followed: the child, the offset and the local's
-    kind must be unchanged, and a named symbol never moves.
+    ``<family>.expected_code_symbol_references`` lists, per closure child, the
+    code symbols its relocations name and the offsets those symbols sit at.
+    After a declaration change the compiler restarts its ``$L``/``$T`` serials,
+    so the same reference carries a new name at the very same offset.  Only
+    that renumbering is followed: the child, the offset and the local's kind
+    must be unchanged, and a named symbol never moves.  Donor rewriting reads
+    its donor; composed rewriting reads the seed its program is applied to.
     """
 
-    key = "donor_rewriting.expected_code_symbol_references"
     declared = receipt.expected_values.get(key)
     if not isinstance(declared, list) or not declared:
         return None
@@ -583,6 +615,106 @@ def _donor_rewriting_measurements(
         measured,
         _SAFE_DONOR_REWRITING_PIN_KEYS,
     )
+
+
+def _require_immutable_composed_bodies(
+    receipt: ClassicProofReceipt,
+    seed: CoffObject,
+    seed_primary: CoffSection,
+    donor: CoffObject,
+    donor_primary: CoffSection,
+) -> None:
+    """Refuse a composed-rewriting repair whose seed or witness bytes moved.
+
+    The program addresses the seed by byte offset, so a body that is not
+    byte-identical is a different program, not a renumbered one.
+    """
+
+    for role, coff, primary, key in (
+        ("seed", seed, seed_primary, "expected_seed_body_sha256"),
+        ("witness", donor, donor_primary, "expected_donor_body_sha256"),
+    ):
+        pin = receipt.expected_values.get(key)
+        fresh = sha256(bytes(coff_body(coff, primary))).hexdigest()
+        if not isinstance(pin, str) or len(pin) != 64:
+            raise MeasuredPinRepairError(f"composed-rewriting receipt has no immutable {key} pin")
+        if fresh != pin:
+            raise MeasuredPinRepairError(
+                f"fresh composed-rewriting {role} body differs from its immutable {key} pin; "
+                "the transformation program addresses those bytes by offset"
+            )
+
+
+def _refreshed_composed_debug_digests(
+    receipt: ClassicProofReceipt,
+    seed: CoffObject,
+    seed_primary: CoffSection,
+) -> dict[str, object]:
+    """Restate the seed's ``.debug$S`` digest when the compiler only renamed locals.
+
+    The stream carries the ``$L``/``$T`` names, so a renumbering moves its
+    digest while the code it describes is unchanged.  A program that MAPS the
+    stream declares a different image digest from its seed digest; that image
+    is a decision, not a restatement, so it is left for the producer to judge.
+    """
+
+    seed_pin = receipt.expected_values.get("composed_rewriting.expected_seed_debug_s_sha256")
+    image_pin = receipt.expected_values.get("composed_rewriting.expected_image_debug_s_sha256")
+    if not isinstance(seed_pin, str) or not isinstance(image_pin, str):
+        return {}
+    try:
+        stream = bytes(coff_body(seed, _comdat_child(seed, seed_primary, ".debug$S")))
+    except (ClassicProjectError, KeyError, TypeError, ValueError) as exc:
+        raise MeasuredPinRepairError(
+            f"composed-rewriting seed exposes no .debug$S closure child: {exc}"
+        ) from exc
+    fresh = sha256(stream).hexdigest()
+    if fresh == seed_pin:
+        return {}
+    if image_pin != seed_pin:
+        raise MeasuredPinRepairError(
+            "composed-rewriting debug$S moved under a program that maps it; its image "
+            "digest is a decision, not a restatement of the seed's"
+        )
+    return {
+        "composed_rewriting.expected_seed_debug_s_sha256": fresh,
+        "composed_rewriting.expected_image_debug_s_sha256": fresh,
+    }
+
+
+def _composed_rewriting_measurements(
+    intervention: ClassicRecipeIntervention,
+    receipt: ClassicProofReceipt,
+    seed_bytes: bytes,
+    donor_bytes: bytes,
+) -> tuple[dict[str, object], frozenset[str]]:
+    """Restate a composed rewriting's object observations around an identical body."""
+
+    symbol = intervention.symbol or ""
+    seed = CoffObject(seed_bytes)
+    donor = CoffObject(donor_bytes)
+    seed_primary = seed.function_section(symbol)
+    donor_primary = donor.function_section(symbol)
+    _require_immutable_composed_bodies(receipt, seed, seed_primary, donor, donor_primary)
+    measured = _seat_observations(seed, donor, symbol)
+    measured["expected_donor_section_count"] = len(donor.sections)
+    measured.update(_refreshed_composed_debug_digests(receipt, seed, seed_primary))
+    references = _renumbered_code_symbol_references(
+        receipt,
+        seed,
+        seed_primary,
+        key="composed_rewriting.expected_code_symbol_references",
+    )
+    if references is not None:
+        measured["composed_rewriting.expected_code_symbol_references"] = references
+    # The composed body keeps the seed's own relocations, so their object-local
+    # section seats are observations of the fresh seed.
+    relocation_seats = _named_external_relocation_seats(
+        receipt, seed, seed_primary, follow_locals=True
+    )
+    if relocation_seats is not None:
+        measured["retail_relocations"] = relocation_seats
+    return measured, _SAFE_COMPOSED_REWRITING_PIN_KEYS
 
 
 def _reloc_divergent_measurements(
@@ -893,10 +1025,12 @@ def repair_measured_pins(
         family = intervention.family
         source_equal_body = family is ClassicRecipeFamily.RETAIL_EXACT_SOURCE_EQUAL_BODY
         donor_rewriting = family is ClassicRecipeFamily.RETAIL_EXACT_DONOR_REWRITING
+        composed_rewriting = family is ClassicRecipeFamily.RETAIL_EXACT_COMPOSED_REWRITING
         reloc_divergent = family is ClassicRecipeFamily.RETAIL_EXACT_RELOC_DIVERGENT
         seat_observation = family in _SEAT_OBSERVATION_FAMILIES
         repinnable = (
             donor_rewriting
+            or composed_rewriting
             or source_equal_body
             or reloc_divergent
             or seat_observation
@@ -913,6 +1047,10 @@ def repair_measured_pins(
     try:
         if donor_rewriting:
             measured, safe_keys = _donor_rewriting_measurements(intervention, receipt, seed, donor)
+        elif composed_rewriting:
+            measured, safe_keys = _composed_rewriting_measurements(
+                intervention, receipt, seed, donor
+            )
         elif seat_observation:
             measured, safe_keys = _seat_observation_measurements(
                 intervention, receipt, seed, donor, materials
@@ -930,7 +1068,7 @@ def repair_measured_pins(
             )
         elif reloc_divergent:
             measured, safe_keys = _reloc_divergent_measurements(intervention, receipt, seed, donor)
-        elif not donor_rewriting and not seat_observation:
+        elif not donor_rewriting and not seat_observation and not composed_rewriting:
             measured, safe_keys = _composition_measurements(intervention, receipt, seed, donor)
         refreshed, changed_keys = _updated_receipt(receipt, measured, safe_keys)
         if family in _DEBUG_DELTA_FAMILIES:
