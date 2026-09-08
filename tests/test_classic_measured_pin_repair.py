@@ -892,6 +892,7 @@ def test_relocation_seats_follow_a_renumbered_local_in_the_functions_own_section
         (40, "_g_pizzaHitSounds$S72830", 12, 3),
     )
     monkeypatch.setattr(module, "detailed_relocations", lambda *_args: fresh)
+    monkeypatch.setattr(module, "_own_comdat_sections", lambda *_args: frozenset({190}))
     primary = cast(Any, {"number": 190})
 
     refreshed = module._named_external_relocation_seats(
@@ -1130,3 +1131,120 @@ def test_composed_rewriting_refuses_to_restate_a_mapped_debug_stream() -> None:
         )
 
     assert "maps it" in str(error.value)
+
+
+def test_relocation_seats_follow_a_local_when_the_receipt_pins_no_primary_section(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Relocation-divergent receipts carry no `expected_section_number`.
+
+    Their locals still renumber and reseat when the compiler renumbers sections,
+    so the observed side plus the unchanged semantic fields carry the seat move.
+    """
+
+    import reprobit.classic_measured_pin_repair as module
+
+    intervention = _intervention(ClassicRecipeFamily.RETAIL_EXACT_RELOC_DIVERGENT)
+    declared = _rows(
+        (2, "__except_list", 0, 2),
+        (12, "$L66730", 36, 6),
+    )
+    for row in declared:
+        row["retail_target"] = "0x1003d277"
+    receipt = _receipt(intervention, {"retail_relocations": declared})
+    assert "expected_section_number" not in receipt.expected_values
+
+    fresh = _rows(
+        (2, "__except_list", 0, 2),
+        (12, "$L66745", 39, 6),
+    )
+    monkeypatch.setattr(module, "detailed_relocations", lambda *_args: fresh)
+    monkeypatch.setattr(module, "_own_comdat_sections", lambda *_args: frozenset({39, 40}))
+    primary = cast(Any, {"number": 39})
+
+    refreshed = module._named_external_relocation_seats(
+        receipt, cast(Any, object()), primary, follow_locals=True
+    )
+    assert refreshed is not None
+    assert refreshed[1]["target"] == "$L66745"  # type: ignore[index]
+    assert refreshed[1]["target_section"] == 39  # type: ignore[index]
+    # The authoritative retail address is carried through untouched.
+    assert refreshed[1]["retail_target"] == "0x1003d277"  # type: ignore[index]
+    assert refreshed[0] == declared[0]
+    assert declared[1]["target"] == "$L66730"
+
+    # A local that reseats into a sibling of the function's own COMDAT closure
+    # (.debug$S, .xdata$x) moves with the group and is followed too.
+    sibling = _rows(
+        (2, "__except_list", 0, 2),
+        (12, "$L66745", 40, 6),
+    )
+    monkeypatch.setattr(module, "detailed_relocations", lambda *_args: sibling)
+    in_closure = module._named_external_relocation_seats(
+        receipt, cast(Any, object()), primary, follow_locals=True
+    )
+    assert in_closure is not None
+    assert in_closure[1]["target_section"] == 40  # type: ignore[index]
+
+    # A local that lands outside that closure has left the function and is
+    # still refused, pin or no pin.
+    elsewhere = _rows(
+        (2, "__except_list", 0, 2),
+        (12, "$L66745", 41, 6),
+    )
+    monkeypatch.setattr(module, "detailed_relocations", lambda *_args: elsewhere)
+    with pytest.raises(MeasuredPinRepairError, match="not an exact named-external"):
+        module._named_external_relocation_seats(
+            receipt, cast(Any, object()), primary, follow_locals=True
+        )
+
+    # A receipt that does pin a primary section still has to agree with it.
+    pinned = _receipt(intervention, {"expected_section_number": 12, "retail_relocations": declared})
+    monkeypatch.setattr(module, "detailed_relocations", lambda *_args: fresh)
+    with pytest.raises(MeasuredPinRepairError, match="not an exact named-external"):
+        module._named_external_relocation_seats(
+            pinned, cast(Any, object()), primary, follow_locals=True
+        )
+
+
+def test_relocation_seat_refusal_names_the_row_and_every_moved_field(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import reprobit.classic_measured_pin_repair as module
+
+    intervention = _intervention(ClassicRecipeFamily.RETAIL_EXACT_RELOC_DIVERGENT)
+    declared = _rows((2, "__except_list", 0, 2), (12, "$L66730", 36, 6))
+    receipt = _receipt(intervention, {"retail_relocations": declared})
+    fresh = _rows((2, "__except_list", 0, 2), (12, "$L66745", 41, 6))
+    monkeypatch.setattr(module, "detailed_relocations", lambda *_args: fresh)
+
+    with pytest.raises(MeasuredPinRepairError) as error:
+        module._named_external_relocation_seats(
+            receipt, cast(Any, object()), cast(Any, {"number": 39}), follow_locals=True
+        )
+
+    message = str(error.value)
+    assert "at relocation 1" in message
+    assert "target '$L66730' -> '$L66745'" in message
+    assert "target_section 36 -> 41" in message
+
+
+def test_own_comdat_sections_covers_the_primary_and_its_selection_five_associates() -> None:
+    import reprobit.classic_measured_pin_repair as module
+    from reprobit.classic.coff import _comdat_child, _comdat_child_closure
+
+    payload = coff_fixture.make_coff()
+    coff = CoffObject(payload)
+    primary = coff.function_section(SYMBOL)
+    expected = {primary["number"]} | {
+        _comdat_child(coff, primary, name)["number"]
+        for name in _comdat_child_closure(coff, primary)[1]
+    }
+
+    sections = module._own_comdat_sections(coff, primary)
+
+    assert sections == expected
+    assert primary["number"] in sections
+    assert len(sections) > 1  # the fixture carries .debug$F and .debug$S
+    # An unreadable closure refuses every move rather than guessing.
+    assert module._own_comdat_sections(cast(Any, object()), primary) == frozenset()

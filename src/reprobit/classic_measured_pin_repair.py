@@ -8,6 +8,7 @@ candidate again.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from hashlib import sha256
@@ -380,6 +381,59 @@ def _source_equal_body_measurements(
     return measured, _SAFE_SOURCE_EQUAL_BODY_PIN_KEYS
 
 
+def _own_comdat_sections(donor: CoffObject, donor_primary: CoffSection) -> frozenset[int]:
+    """The section numbers that belong to this function alone.
+
+    A COMDAT's primary section and its selection-5 associates (`.debug$F`,
+    `.debug$S`, `.xdata$x`) are emitted and discarded together, so a compiler
+    local may sit in any of them and the whole group renumbers as one when a
+    declaration-only edit reorders sections.  A local that lands outside this
+    set has left the function and is not a reseating.  An unreadable closure
+    yields the empty set, which refuses every move.
+    """
+
+    try:
+        numbers = {int(donor_primary["number"])}
+        for name in _comdat_child_closure(donor, donor_primary)[1]:
+            numbers.add(int(_comdat_child(donor, donor_primary, name)["number"]))
+    except (ClassicProjectError, AttributeError, KeyError, TypeError, ValueError):
+        return frozenset()
+    return frozenset(numbers)
+
+
+def _relocation_drift_detail(
+    index: int,
+    record: Mapping[str, object],
+    expected: Mapping[str, object],
+) -> str:
+    """Name the one relocation a seat refresh refused, and every field that moved.
+
+    A refusal that only says a seat drifted forces the operator to rebuild the
+    rejected objects by hand to learn which row it meant.  The receipt and the
+    fresh object are both in hand here, so say it.
+    """
+
+    fields = (
+        "offset",
+        "type",
+        "addend",
+        "target",
+        "target_section",
+        "target_value",
+        "target_type",
+        "target_storage",
+    )
+    moved = [
+        f"{field} {expected.get(field)!r} -> {record.get(field)!r}"
+        for field in fields
+        if record.get(field) != expected.get(field)
+    ]
+    where = f" at relocation {index}"
+    if not moved:
+        return where
+    return f"{where}: " + ", ".join(moved)
+
+
 def _named_external_relocation_seats(
     receipt: ClassicProofReceipt,
     donor: CoffObject,
@@ -409,6 +463,7 @@ def _named_external_relocation_seats(
     observed = detailed_relocations(donor, donor_primary)
     if len(observed) != len(declared):
         return None
+    own_sections = _own_comdat_sections(donor, donor_primary) if follow_locals else frozenset()
 
     refreshed = deepcopy(declared)
     moved = False
@@ -436,6 +491,7 @@ def _named_external_relocation_seats(
             if not renumbered:
                 raise MeasuredPinRepairError(
                     "fresh donor relocation target drift is not a compiler-serial renumbering"
+                    f"{_relocation_drift_detail(index, record, expected)}"
                 )
             refreshed_row["target"] = observed_target
             moved = True
@@ -452,15 +508,23 @@ def _named_external_relocation_seats(
             and isinstance(expected_target, str)
             and observed_target == expected_target
         )
+        # The saved primary-section pin, when the family records one, proves the
+        # local sat in the function's own section before too.  Families whose
+        # receipts carry no such pin (relocation-divergent among them) cannot
+        # state that side at all; there the observed side plus the unchanged
+        # semantic fields are what the seat move rests on, and the ordinary
+        # producer still revalidates the complete refreshed oracle.
+        seated_section_pin = receipt.expected_values.get("expected_section_number")
         renumbered_local = (
             renumbered
             and local_symbol_kind(str(expected_target)) is not None
-            and observed_section == donor_primary["number"]
-            and expected_section == receipt.expected_values.get("expected_section_number")
+            and observed_section in own_sections
+            and (seated_section_pin is None or expected_section == seated_section_pin)
         )
         if not fixed_fields_match or not (exact_named_external or renumbered_local):
             raise MeasuredPinRepairError(
                 "fresh donor relocation section drift is not an exact named-external seat move"
+                f"{_relocation_drift_detail(index, record, expected)}"
             )
         refreshed_row["target_section"] = observed_section
         if renumbered_local:
@@ -734,7 +798,9 @@ def _reloc_divergent_measurements(
         "expected_donor_line_count": donor_primary["line_count"],
         "expected_donor_section_number": donor_primary["number"],
     }
-    relocation_seats = _named_external_relocation_seats(receipt, donor, donor_primary)
+    relocation_seats = _named_external_relocation_seats(
+        receipt, donor, donor_primary, follow_locals=True
+    )
     if relocation_seats is not None:
         measured["retail_relocations"] = relocation_seats
     return measured, _SAFE_RELOC_DIVERGENT_PIN_KEYS
