@@ -20,6 +20,8 @@ from reprobit.report_html_components import (
     short_digest,
     table,
 )
+from reprobit.report_html_explorer import render_explorer
+from reprobit.report_html_explorer_style import EXPLORER_CSS, EXPLORER_SCRIPT
 from reprobit.report_html_format import (
     cost_class_label,
     format_bytes,
@@ -630,6 +632,7 @@ def _render_next_steps(report: Report) -> str:
 def _render_navigation(report: Report) -> str:
     links = [
         ("Overview", "#overview"),
+        ("Binary explorer", "#binary-explorer"),
     ]
     if (
         not report.verdict.byte_exact
@@ -654,6 +657,7 @@ def render_report_html(
     report: Report,
     *,
     canonical_json_href: str | None = None,
+    explorer_context: dict[str, object] | None = None,
 ) -> str:
     """Render a deterministic, dependency-free report with layered evidence detail."""
 
@@ -672,7 +676,16 @@ def render_report_html(
         brand=f"ReproBit · <code>{escape(report.project_id)}</code>",
         run_label=f"Run <code>{escape(short_digest(report.run_id.value))}</code>",
         nav=_render_navigation(report),
-        main="\n".join(sections),
+        main=(
+            '<div id="report-summary">'
+            + "\n".join(sections)
+            + "</div>"
+            + render_explorer(
+                report, context=explorer_context, canonical_json_href=canonical_json_href
+            )
+        ),
+        extra_css=EXPLORER_CSS,
+        extra_script=EXPLORER_SCRIPT,
         footer=(
             f"ReproBit report schema <code>v{report.schema_version}</code> · "
             "deterministic local HTML ·\n  no external assets"

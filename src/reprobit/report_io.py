@@ -59,10 +59,13 @@ def render_report_html(
     report: Report,
     *,
     canonical_json_href: str | None = None,
+    explorer_context: dict[str, object] | None = None,
 ) -> str:
     """Render a deterministic local report with no external runtime or assets."""
 
-    return _render_report_html(report, canonical_json_href=canonical_json_href)
+    return _render_report_html(
+        report, canonical_json_href=canonical_json_href, explorer_context=explorer_context
+    )
 
 
 def write_report_html(
@@ -70,6 +73,7 @@ def write_report_html(
     path: str | Path,
     *,
     canonical_json_path: str | Path | None = None,
+    explorer_context: dict[str, object] | None = None,
 ) -> None:
     """Write a self-contained report atomically."""
 
@@ -78,6 +82,7 @@ def write_report_html(
         render_report_html(
             report,
             canonical_json_href=report_json_href(path, canonical_json_path),
+            explorer_context=explorer_context,
         ).encode("utf-8"),
     )
 

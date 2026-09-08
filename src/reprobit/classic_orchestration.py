@@ -11,7 +11,7 @@ inputs, compose translation units, and apply the candidate-only terminal pipelin
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from types import MappingProxyType
@@ -780,8 +780,10 @@ def compose_classic_unit(
     seed_source: bytes,
     legacy_oracles: Mapping[str, PE32VirtualAddressReader] | None = None,
     measured_receipt_repair: repair_dispatch.ClassicMeasuredReceiptRepair | None = None,
+    capture_function_change: Callable[[ClassicRecipeIntervention, bytes, ClassicCandidate], None]
+    | None = None,
 ) -> ClassicUnitComposition:
-    """Compose one TU; only a repair callback may capture a finite target span."""
+    """Compose one TU; only repair may read a finite reference-image span."""
 
     if not isinstance(seed_object, bytes) or not isinstance(seed_source, bytes):
         raise ClassicProjectError("classic unit inputs must be immutable bytes")
@@ -996,6 +998,8 @@ def compose_classic_unit(
             continue
         candidate = dispatch.candidate
         provisional_repair = provisional_repair or dispatch.provisional_repair
+        if capture_function_change is not None:
+            capture_function_change(function, output, candidate)
         output = candidate.output
         for donor_id, input_name in sorted(function_donor_inputs.items()):
             donor_uses[donor_id].append(

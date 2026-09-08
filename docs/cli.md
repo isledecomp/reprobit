@@ -659,6 +659,11 @@ policy.
 
 ### Reading the report
 
+The **Binary explorer** page connects intervention costs to addresses, generated
+source, and the steps that produce each change. Select an address band or search
+for a function, then inspect its rendering and related changes. See the
+[binary explorer guide](binary-explorer.md) for coordinate meanings and coverage.
+
 Open `build/reprobit-report/report.html` in a browser. Start with the overall
 result and target summaries: they separately show whether the bytes match, the
 saved adjustments passed their logic checks, the output came from the declared

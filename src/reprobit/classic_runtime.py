@@ -103,7 +103,7 @@ from reprobit.secure_path_contracts import SecurePathError
 from reprobit.secure_paths import reseal_relative_file
 
 if TYPE_CHECKING:
-    pass
+    from reprobit.report import Report
 
 
 from reprobit.classic_runtime_donor import ClassicDonorComposition
@@ -332,6 +332,37 @@ class ClassicProducerGraphBuildExecutor:
 
     def close(self) -> None:
         self.producer.close()
+
+    def explorer_source_context(self, report: Report) -> dict[str, object]:
+        """Retain exact clean source changes from immutable epoch pairs."""
+        from reprobit.report_explorer_sources import collect_source_diff_context
+
+        if self.record is None:
+            return report.exploration
+        return collect_source_diff_context(report, pairs=self.overlay.project_source_pairs)
+
+    def explorer_context(self, report: Report) -> dict[str, object]:
+        """Capture actual terminal-link addresses before the run workspace closes."""
+        from reprobit.report_explorer_link_map import collect_link_map_context
+
+        if self.record is None:
+            return report.exploration
+        maps = self.producer.linker_maps
+        context = collect_link_map_context(
+            report,
+            captures={
+                image.target_id: (image.link_step_id, str(image.raw_path), maps[image.link_step_id])
+                for image in self.record.images
+                if image.link_step_id in maps
+            },
+        )
+        assembly = self.donors.explorer_assembly_context()
+        context["assembly"] = assembly["assembly"]
+        diagnostics = context.get("diagnostics", [])
+        assembly_diagnostics = assembly.get("diagnostics", [])
+        if isinstance(diagnostics, list) and isinstance(assembly_diagnostics, list):
+            context["diagnostics"] = [*diagnostics, *assembly_diagnostics]
+        return context
 
     def evidence_inputs(self) -> ClassicRuntimeEvidenceInputs:
         if self.record is None:

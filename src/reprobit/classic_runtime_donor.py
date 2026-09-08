@@ -47,6 +47,7 @@ from reprobit.classic_orchestration import (
     compose_classic_unit,
 )
 from reprobit.classic_project import (
+    ClassicCandidate,
     ClassicProjectError,
     InterventionWitness,
 )
@@ -87,6 +88,7 @@ from reprobit.producer_graph import (
     ProducerRole,
 )
 from reprobit.schema import (
+    ClassicRecipeIntervention,
     ProjectBundle,
 )
 from reprobit.sealed_namespace import (
@@ -224,12 +226,63 @@ class ClassicDonorComposition:
         self._donor_outputs: list[ClassicDonorOutputReceipt] = []
         self._object_transforms: list[ClassicObjectTransformReceipt] = []
         self._donor_semantic_lanes: list[DonorSemanticLane] = []
+        self._explorer_assembly: dict[str, dict[str, object]] = {}
+        self._explorer_assembly_unavailable: set[str] = set()
         self._legacy_oracles: Mapping[str, PE32VirtualAddressReader] = MappingProxyType({})
         self._started = False
 
     def producer_reads(self) -> tuple[ClassicProducerReadReceipt, ...]:
         with self._evidence_lock:
             return tuple(self._producer_reads)
+
+    def explorer_assembly_context(self) -> dict[str, object]:
+        """Return display-only captures without retaining compiler object bytes."""
+        with self._evidence_lock:
+            unavailable = sorted(self._explorer_assembly_unavailable)
+            return {
+                "assembly": dict(sorted(self._explorer_assembly.items())),
+                "diagnostics": (
+                    [
+                        {
+                            "kind": "assembly-unavailable",
+                            "count": len(unavailable),
+                            "interventions": unavailable,
+                            "message": (
+                                f"Assembly changes could not be captured for {len(unavailable)} "
+                                "function interventions. Their other records remain available."
+                            ),
+                        }
+                    ]
+                    if unavailable
+                    else []
+                ),
+            }
+
+    def _capture_function_change(
+        self,
+        intervention: ClassicRecipeIntervention,
+        before: bytes,
+        candidate: ClassicCandidate,
+    ) -> None:
+        # Display enrichment cannot change a certifying producer's result.
+        try:
+            from reprobit.report_explorer_assembly import capture_assembly_diff
+
+            capture = capture_assembly_diff(
+                intervention,
+                before,
+                candidate.output,
+                input_statement=candidate.semantic_input_statement,
+                output_statement=candidate.semantic_output_statement,
+            )
+        except Exception:
+            capture = None
+        with self._evidence_lock:
+            if capture is None:
+                self._explorer_assembly_unavailable.add(intervention.id)
+            else:
+                self._explorer_assembly[intervention.id] = capture
+                self._explorer_assembly_unavailable.discard(intervention.id)
 
     def donor_outputs(self) -> tuple[ClassicDonorOutputReceipt, ...]:
         with self._evidence_lock:
@@ -926,6 +979,7 @@ class ClassicDonorComposition:
             seed_source=record.source.read_bytes(),
             legacy_oracles=self._legacy_oracles,
             measured_receipt_repair=self.measured_receipt_repair,
+            capture_function_change=self._capture_function_change,
         )
         if composition.incomplete:
             temporary = record.object_path.with_name(

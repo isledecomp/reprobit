@@ -25,7 +25,7 @@ from reprobit.model import (
     quarantine_proof_binding,
 )
 from reprobit.schema import MsvcRelease, ProjectBundle
-from reprobit.strict_json import canonical_json
+from reprobit.strict_json import canonical_json, strict_loads
 
 
 class ToolSummary(StrictModel):
@@ -786,6 +786,17 @@ class Report(StrictModel):
     timings: tuple[StageTiming, ...] = ()
     cache: CacheSummary = Field(default_factory=CacheSummary)
     previous: PreviousComparison | None = None
+    exploration: dict[str, object] = Field(default_factory=dict)
+
+    @field_validator("exploration", mode="before")
+    @classmethod
+    def exploration_is_canonical_json(cls, value: object) -> object:
+        """Bind portable presentation context without widening proof claims."""
+
+        normalized = strict_loads(canonical_json(value))
+        if not isinstance(normalized, dict):
+            raise ValueError("report exploration must be a JSON object")
+        return normalized
 
     @model_validator(mode="after")
     def evidence_summary_matches_payload(self) -> Report:
@@ -802,6 +813,27 @@ class Report(StrictModel):
         unknown_cost_targets = cost_targets - target_ids
         if unknown_cost_targets:
             raise ValueError(f"report costs name unknown targets: {sorted(unknown_cost_targets)}")
+        declarations = self.exploration.get("declarations", {})
+        if not isinstance(declarations, dict):
+            raise ValueError("report exploration declarations must be a JSON object")
+        cost_rows = {item.intervention_id: item for item in self.costs.interventions}
+        for identity, declaration in declarations.items():
+            cost_row = cost_rows.get(identity)
+            if cost_row is None or not isinstance(declaration, dict):
+                raise ValueError("report exploration declaration names an unknown intervention")
+            authority = Digest.from_bytes(
+                canonical_json(
+                    {
+                        "schema": "reprobit-intervention-authority-v1",
+                        "intervention": declaration,
+                    }
+                )
+            )
+            if (
+                declaration.get("id") != identity
+                or authority != cost_row.intervention_authority_digest
+            ):
+                raise ValueError("report exploration declaration differs from its cost authority")
         certificate_intervention_ids = [item.intervention_id for item in self.proof.certificates]
         if len(certificate_intervention_ids) != len(set(certificate_intervention_ids)):
             raise ValueError("report requires exactly one certificate per intervention")
@@ -1051,6 +1083,7 @@ class Report(StrictModel):
         timings: tuple[StageTiming, ...] = (),
         cache: CacheSummary | None = None,
         previous: PreviousComparison | None = None,
+        exploration: dict[str, object] | None = None,
     ) -> Report:
         """Bind every public report field into a consumer-recomputable run ID."""
 
@@ -1069,6 +1102,7 @@ class Report(StrictModel):
             "proof": proof,
             "timings": ordered_timings,
             "cache": cache_summary,
+            "exploration": exploration or {},
         }
         if previous is not None:
             identity_material["previous"] = previous
@@ -1086,6 +1120,26 @@ class Report(StrictModel):
             timings=ordered_timings,
             cache=cache_summary,
             previous=previous,
+            exploration=exploration or {},
+        )
+
+    def with_exploration(self, context: dict[str, object]) -> Report:
+        """Return a report whose run ID also binds its visual exploration context."""
+
+        return type(self).create(
+            project_id=self.project_id,
+            runtime_binding=self.runtime_binding,
+            toolchain=self.toolchain,
+            paths=self.paths,
+            verdict=self.verdict,
+            costs=self.costs,
+            targets=self.targets,
+            evidence=self.evidence,
+            proof=self.proof,
+            timings=self.timings,
+            cache=self.cache,
+            previous=self.previous,
+            exploration=context,
         )
 
     @classmethod
@@ -1180,6 +1234,65 @@ class Report(StrictModel):
             timings=tuple(sorted(timings, key=lambda item: item.stage)),
             cache=cache or CacheSummary(),
             previous=previous_comparison,
+            exploration={
+                "declarations": {
+                    item.id: item.model_dump(mode="json", exclude_computed_fields=True)
+                    for item in sorted(bundle.interventions, key=lambda item: item.id)
+                },
+                "translation_units": [
+                    {
+                        "tu": unit.id,
+                        "target": unit.target_id,
+                        "source_path": unit.source,
+                        "source_digest": unit.source_digest.model_dump(mode="json"),
+                        "build_target": unit.build_target,
+                    }
+                    for unit in (
+                        sorted(bundle.build_plan.translation_units, key=lambda item: item.id)
+                        if bundle.build_plan is not None
+                        else ()
+                    )
+                ],
+                "object_transforms": [
+                    {
+                        "tu": unit.id,
+                        "target": unit.target_id,
+                        "source_path": unit.source,
+                        **unit.group_order.model_dump(mode="json"),
+                    }
+                    for unit in (
+                        sorted(bundle.build_plan.translation_units, key=lambda item: item.id)
+                        if bundle.build_plan is not None
+                        else ()
+                    )
+                    if unit.group_order is not None
+                ],
+                "targets": [
+                    {
+                        "id": target.id,
+                        "reference_digest": oracles[target.id].image_digest.model_dump(mode="json"),
+                        "symbols": [
+                            {
+                                "name": function.symbol,
+                                "tu": function.translation_unit,
+                                "va": function.address,
+                                "size": function.size,
+                                "space": "va" if target.byte_exact else "reference-va",
+                                "basis": (
+                                    "Reference function inventory; candidate matches byte for byte"
+                                    if target.byte_exact
+                                    else "Reference inventory; candidate position is unverified"
+                                ),
+                            }
+                            for function in sorted(
+                                oracles[target.id].functions,
+                                key=lambda item: (item.address, item.symbol, item.translation_unit),
+                            )
+                        ],
+                    }
+                    for target in targets
+                ],
+            },
         )
 
 

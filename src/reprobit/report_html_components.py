@@ -232,6 +232,7 @@ def page_shell(
     main: str,
     footer: str,
     extra_css: str = "",
+    extra_script: str = "",
     skip_label: str = "Skip to report",
 ) -> str:
     """Wrap rendered sections in the shared deterministic, asset-free page skeleton.
@@ -265,7 +266,7 @@ def page_shell(
 <footer class="footer"><div class="footer-inner">
   {footer}
 </div></footer>
-<script>{REPORT_SCRIPT}</script>
+<script>{REPORT_SCRIPT}\n{extra_script}</script>
 </body>
 </html>
 """
