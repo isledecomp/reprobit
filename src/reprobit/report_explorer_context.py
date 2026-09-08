@@ -33,6 +33,7 @@ from reprobit.report_explorer_sources import (
     source_pairs,
     source_rendering,
 )
+from reprobit.secure_path_contracts import is_redirected_metadata, no_follow_file_flags
 
 _MAX_FILE_BYTES = 128 * 1024 * 1024
 _MAX_TOTAL_BYTES = 256 * 1024 * 1024
@@ -88,17 +89,32 @@ class _Reader:
             self.issue("read-limit", "A recorded file exceeds the explorer read limit.", **details)
             return None
         try:
-            flags = os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0)
+            named = Path(path).lstat()
+            if is_redirected_metadata(named) or not stat.S_ISREG(named.st_mode):
+                self.issue("not-regular", "A recorded file is not a regular file.", **details)
+                return None
+            flags = no_follow_file_flags(os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
             with os.fdopen(os.open(path, flags), "rb") as stream:
                 info = os.fstat(stream.fileno())
-                if not stat.S_ISREG(info.st_mode):
+                if is_redirected_metadata(info) or not stat.S_ISREG(info.st_mode):
                     self.issue("not-regular", "A recorded file is not a regular file.", **details)
+                    return None
+                if (info.st_dev, info.st_ino) != (named.st_dev, named.st_ino):
+                    self.issue("stale-file", "A recorded file changed while opening.", **details)
                     return None
                 if info.st_size != size:
                     self.issue("stale-file", "A recorded file has changed size.", **details)
                     return None
                 data = stream.read(size + 1)
                 self.bytes_read += len(data)
+                after = Path(path).lstat()
+                if (
+                    is_redirected_metadata(after)
+                    or not stat.S_ISREG(after.st_mode)
+                    or (after.st_dev, after.st_ino) != (info.st_dev, info.st_ino)
+                ):
+                    self.issue("stale-file", "A recorded file changed while reading.", **details)
+                    return None
         except OSError:
             self.issue("missing-file", "A recorded file is missing or cannot be read.", **details)
             return None

@@ -628,7 +628,7 @@ def test_engine_runs_build_verifies_evidence_and_materializes_reports(
     assert result.report.proof.providers[0].id == provider.name
     assert result.report.proof.package.id == "reprobit"
     assert reports.json is not None and reports.json.read_bytes().endswith(b"\n")
-    assert reports.html is not None and "Cost overview" in reports.html.read_text()
+    assert reports.html is not None and "Cost overview" in reports.html.read_text(encoding="utf-8")
     assert publication_leases == [state_root]
 
 

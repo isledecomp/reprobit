@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import struct
 from pathlib import Path
 
@@ -25,7 +26,68 @@ from reprobit.report import (
     SupplementalOutputSummary,
     TargetSummary,
 )
-from reprobit.report_explorer_context import collect_explorer_context
+from reprobit.report_explorer_context import _Reader, collect_explorer_context
+
+
+def test_reader_preserves_binary_bytes_without_posix_open_flags(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "source.cpp"
+    payload = b"first\r\nsecond\x1a\r\n\x00\xff"
+    path.write_bytes(payload)
+    native_binary = getattr(os, "O_BINARY", 0)
+    binary_flag = native_binary or 1 << 29
+    original_open = os.open
+    monkeypatch.delattr(os, "O_NONBLOCK", raising=False)
+    monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)
+    monkeypatch.setattr(os, "O_BINARY", binary_flag, raising=False)
+
+    def open_binary(path: str, flags: int) -> int:
+        assert flags & binary_flag
+        return original_open(path, flags if native_binary else flags & ~binary_flag)
+
+    monkeypatch.setattr(os, "open", open_binary)
+    reader = _Reader([])
+
+    assert reader.read(str(path), len(payload), Digest.from_bytes(payload)) == payload
+    assert reader.diagnostics == []
+
+
+def test_reader_rejects_symlinks_without_no_follow_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source.cpp"
+    payload = b"recorded source"
+    source.write_bytes(payload)
+    alias = tmp_path / "alias.cpp"
+    alias.symlink_to(source)
+    monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)
+    reader = _Reader([])
+
+    assert reader.read(str(alias), len(payload), Digest.from_bytes(payload)) is None
+    assert reader.diagnostics[0]["kind"] == "not-regular"
+    assert reader.bytes_read == 0
+
+
+def test_reader_rejects_replaced_file_even_when_bytes_match(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "source.cpp"
+    replacement = tmp_path / "replacement.cpp"
+    payload = b"recorded source"
+    path.write_bytes(payload)
+    replacement.write_bytes(payload)
+    original_open = os.open
+
+    def open_replaced_file(name: str, flags: int) -> int:
+        replacement.replace(path)
+        return original_open(name, flags)
+
+    monkeypatch.setattr(os, "open", open_replaced_file)
+    reader = _Reader([])
+
+    assert reader.read(str(path), len(payload), Digest.from_bytes(payload)) is None
+    assert reader.diagnostics[0]["kind"] == "stale-file"
 
 
 def _image(*, signature: int = 0x66778899) -> bytes:

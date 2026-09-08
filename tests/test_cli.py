@@ -6063,7 +6063,7 @@ def test_report_and_cmake_module_commands(
     assert report_json.read_bytes() == original_report
 
     assert main(["report", str(report_json), "--html", str(report_html)]) == 0
-    assert "<!doctype html>" in report_html.read_text()
+    assert "<!doctype html>" in report_html.read_text(encoding="utf-8")
     assert main(["cmake-module", "--file"]) == 0
     module = Path(capsys.readouterr().out.strip().splitlines()[-1])
     assert module.name == "ReproBit.cmake" and module.is_file()
