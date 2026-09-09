@@ -12,6 +12,7 @@ import reprobit.classic_repair_discovery as subject
 from reprobit.classic_donors import (
     generate_declaration_shape,
     generate_forward_run,
+    generate_pad_shape,
     prepare_donor_compile_request,
 )
 from reprobit.classic_orchestration import ClassicPreparedDonor, ClassicPreparedUnit
@@ -783,3 +784,55 @@ def test_discovery_releases_processed_candidate_objects(
         window_size=1,
     )
     assert result.compiled_candidates == 8
+
+
+def test_discovery_continues_with_pad_shapes_once_every_run_was_tried(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    refusal, seed, goal = _fixture(
+        ClassicRecipeFamily.RETAIL_EXACT_RELOC_DIVERGENT, expected_body_sha256=GOAL_DIGEST
+    )
+    compiled: list[str] = []
+    # Every shape and every forward run was tried earlier; the second pad shape carries the goal.
+    monkeypatch.setattr(
+        subject, "probe_donor_compile_windows", _fake_windows({"default": seed, 2: goal}, compiled)
+    )
+    tried = {
+        "shape::" + Digest.from_bytes(generate_declaration_shape(*shape)).value
+        for shape in subject._shape_states()
+    }
+    for count in range(1, 501):
+        digest = Digest.from_bytes(generate_forward_run("RbDsc", count, 3)).value
+        tried.update(
+            f"forward_run:{placement}:{digest}" for placement in subject._FORWARD_RUN_PLACEMENTS
+        )
+
+    result = subject.probe_carrier_discovery(
+        _Handle(),  # type: ignore[arg-type]
+        (refusal,),
+        clean_sources={"src/unit.cpp": SOURCE},
+        effective_sources={"src/unit.cpp": SOURCE},
+        per_unit=8,
+        window_size=1,
+        tried_states={"unit.fixture": frozenset(tried)},
+    )
+
+    assert result.compiled_candidates == 2
+    assert len(result.repairs) == 1
+    added = {item.intervention.role: item.intervention for item in result.repairs[0].additions}
+    donor = added[ClassicRecipeRole.DONOR]
+    assert donor.family is ClassicRecipeFamily.PAD_SHAPE
+    values = {f.name: f.value for f in donor.parameters}
+    # Smallest pads first: (1,1), then (1,2) carries the goal.
+    assert (values["classes"], values["functions_per_class"]) == (1, 2)
+    assert values["emission_policy"] == "non_emitting_declarations_only"
+    assert values["generated_header_sha256"] == Digest.from_bytes(generate_pad_shape(1, 2)).value
+    assert [scope.function for scope in donor.beneficiaries] == [SYMBOL]
+    assert added[ClassicRecipeRole.FUNCTION].dependencies == (donor.id,)
+    one = Digest.from_bytes(generate_pad_shape(1, 1)).value
+    assert result.tried_states["unit.fixture"] == {
+        f"pad_shape::{one}",
+        f"pad_shape::{values['generated_header_sha256']}",
+    }
+    assert subject._carrier_states()[-1] == ("pad_shape", (8, 8))
+    assert len(subject._pad_states()) == 64

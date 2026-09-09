@@ -36,6 +36,7 @@ from reprobit.classic_donors import (
     DonorSourceError,
     generate_declaration_shape,
     generate_forward_run,
+    generate_pad_shape,
     merge_candidate_constraints,
     prepare_donor_compile_request,
     validate_donor_recipe,
@@ -86,6 +87,7 @@ from reprobit.discovery_authoring import (
     DiscoveryAuthoringError,
     build_declaration_shape_donor,
     build_measured_function_record,
+    build_pad_shape_donor,
 )
 from reprobit.intervention_metadata import (
     ClassicRecipeFamily,
@@ -108,6 +110,8 @@ from reprobit.strict_json import canonical_json
 _FORWARD_RUN_PREFIX = "RbDsc"
 _FORWARD_RUN_WIDTH = 3
 _FORWARD_RUN_PLACEMENTS = ("suffix", "prefix", "after_includes")
+_PAD_SHAPE_LIMIT = 8
+"""Pad shapes are tried up to this many classes and members per class (64 states)."""
 _FORWARD_RUN_RATIONALE = (
     "Framework-generated declaration-only compiler-state carrier rendered with the translation "
     "unit; it contributes no code, data, strings, vtables, or linker directives."
@@ -171,8 +175,27 @@ def _shape_states() -> list[tuple[int, int]]:
     return states
 
 
+def _pad_states() -> list[tuple[int, int]]:
+    """Pad shapes smallest-first: (classes, functions per class) by total size."""
+
+    states = [
+        (classes, functions)
+        for classes in range(1, _PAD_SHAPE_LIMIT + 1)
+        for functions in range(1, _PAD_SHAPE_LIMIT + 1)
+    ]
+    states.sort(key=lambda item: (item[0] + item[1], item[0]))
+    return states
+
+
 def _carrier_states() -> list[tuple[str, tuple[int, int] | tuple[str, int]]]:
-    """Every discovery state cheapest-first: shapes, then forward runs by count."""
+    """Every discovery state cheapest-first: shapes, forward runs by count, then pad shapes.
+
+    Pad shapes come last because a pad-shape record costs more than a
+    declaration shape or a forward run; they are the states that settle a
+    body the two lighter families cannot reach (a force-included run of
+    classes with inline members moves the compiler further than declarations
+    alone).
+    """
 
     states: list[tuple[str, tuple[int, int] | tuple[str, int]]] = [
         ("shape", shape) for shape in _shape_states()
@@ -180,6 +203,7 @@ def _carrier_states() -> list[tuple[str, tuple[int, int] | tuple[str, int]]]:
     for count in range(1, 501):
         for placement in _FORWARD_RUN_PLACEMENTS:
             states.append(("forward_run", (placement, count)))
+    states.extend(("pad_shape", pad) for pad in _pad_states())
     return states
 
 
@@ -395,6 +419,19 @@ def _prepare_attempts(
                         build_target=unit.plan.build_target,
                         classes=classes,
                         functions=functions,
+                    )
+                    intervention, receipt = record.intervention, record.receipt
+                elif kind == "pad_shape":
+                    classes, functions = int(state[0]), int(state[1])
+                    identity = _state_identity(kind, generate_pad_shape(classes, functions))
+                    if identity in taken:
+                        continue
+                    record = build_pad_shape_donor(
+                        target_id=unit.plan.target_id,
+                        translation_unit_id=unit.plan.id,
+                        build_target=unit.plan.build_target,
+                        classes=classes,
+                        functions_per_class=functions,
                     )
                     intervention, receipt = record.intervention, record.receipt
                 else:

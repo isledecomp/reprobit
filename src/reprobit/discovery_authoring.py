@@ -22,6 +22,7 @@ from reprobit.classic.composition import (
 from reprobit.classic_donors import (
     DonorSourceError,
     generate_declaration_shape,
+    generate_pad_shape,
     merge_candidate_constraints,
     validate_donor_recipe,
 )
@@ -46,6 +47,10 @@ from reprobit.strict_json import JsonValue, canonical_json
 
 _DONOR_RATIONALE = (
     "Framework-generated declaration-only compiler state; emits no program code or data."
+)
+_PAD_DONOR_RATIONALE = (
+    "Framework-generated padded declaration-only compiler-state shape force-included ahead of "
+    "the translation unit; it contributes no code, data, strings, vtables, or linker directives."
 )
 _FUNCTION_RATIONALE = (
     "Strict equal-size COMDAT body selection from a freshly compiled private donor."
@@ -237,6 +242,71 @@ def build_declaration_shape_donor(
         raise
     except (DonorSourceError, ValidationError) as exc:
         raise DiscoveryAuthoringError(f"invalid declaration-shape donor: {exc}") from exc
+
+
+def build_pad_shape_donor(
+    *,
+    target_id: str,
+    translation_unit_id: str,
+    build_target: str,
+    classes: int,
+    functions_per_class: int,
+    beneficiary_symbols: tuple[str, ...] = (),
+) -> AuthoredClassicRecord:
+    """Build one deterministic, payload-free pad-shape donor record.
+
+    A pad shape is the heavier sibling of the declaration shape: ``classes``
+    empty classes with ``functions_per_class`` inline members each, force-
+    included ahead of the translation unit.  Like the declaration shape it
+    emits nothing; it only moves the compiler's declaration state.
+    """
+
+    try:
+        generated = generate_pad_shape(classes, functions_per_class)
+        generated_digest = Digest.from_bytes(generated).value
+        beneficiaries = _beneficiary_scopes(
+            target_id=target_id,
+            translation_unit_id=translation_unit_id,
+            symbols=beneficiary_symbols,
+        )
+        parameters: dict[str, JsonValue] = {
+            "classes": classes,
+            "emission_policy": "non_emitting_declarations_only",
+            "functions_per_class": functions_per_class,
+            "generated_header_sha256": generated_digest,
+        }
+        intervention_id = _stable_id(
+            "donor",
+            {
+                "build_target": build_target,
+                "family": ClassicRecipeFamily.PAD_SHAPE.value,
+                "parameters": parameters,
+                "target_id": target_id,
+                "translation_unit_id": translation_unit_id,
+            },
+        )
+        intervention = ClassicRecipeIntervention(
+            id=intervention_id,
+            scope=Scope(target=target_id, translation_unit=translation_unit_id),
+            rationale=_PAD_DONOR_RATIONALE,
+            beneficiaries=beneficiaries,
+            family=ClassicRecipeFamily.PAD_SHAPE,
+            role=ClassicRecipeRole.DONOR,
+            build_target=build_target,
+            parameters=tuple(
+                ClassicField(name=name, value=value) for name, value in sorted(parameters.items())
+            ),
+        )
+        receipt = _record_receipt(intervention, {})
+        constraints = merge_candidate_constraints(intervention, receipt)
+        validation = validate_donor_recipe(intervention, constraints)
+        if validation.generated_declarations != generated:
+            raise DiscoveryAuthoringError("validated donor declarations differ from their recipe")
+        return AuthoredClassicRecord(intervention, receipt)
+    except DiscoveryAuthoringError:
+        raise
+    except (DonorSourceError, ValidationError) as exc:
+        raise DiscoveryAuthoringError(f"invalid pad-shape donor: {exc}") from exc
 
 
 def build_declaration_shape_equal_body(
@@ -543,5 +613,6 @@ __all__ = [
     "build_declaration_shape_donor",
     "build_declaration_shape_equal_body",
     "build_measured_function_record",
+    "build_pad_shape_donor",
     "merge_authored_records",
 ]
