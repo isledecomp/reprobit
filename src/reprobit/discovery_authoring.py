@@ -22,6 +22,7 @@ from reprobit.classic.composition import (
 from reprobit.classic_donors import (
     DonorSourceError,
     generate_declaration_shape,
+    generate_forward_run,
     generate_pad_shape,
     merge_candidate_constraints,
     validate_donor_recipe,
@@ -51,6 +52,11 @@ _DONOR_RATIONALE = (
 _PAD_DONOR_RATIONALE = (
     "Framework-generated padded declaration-only compiler-state shape force-included ahead of "
     "the translation unit; it contributes no code, data, strings, vtables, or linker directives."
+)
+_RUN_WITH_SHAPE_RATIONALE = (
+    "Framework-generated declaration-only compiler-state carrier: a forward-declaration run "
+    "seated at the translation unit's prefix or suffix plus a declaration shape force-included; "
+    "neither half contributes code, data, strings, vtables, or linker directives."
 )
 _FUNCTION_RATIONALE = (
     "Strict equal-size COMDAT body selection from a freshly compiled private donor."
@@ -307,6 +313,80 @@ def build_pad_shape_donor(
         raise
     except (DonorSourceError, ValidationError) as exc:
         raise DiscoveryAuthoringError(f"invalid pad-shape donor: {exc}") from exc
+
+
+def build_forward_run_with_shape_donor(
+    *,
+    target_id: str,
+    translation_unit_id: str,
+    build_target: str,
+    placement: str,
+    prefix: str,
+    count: int,
+    width: int,
+    classes: int,
+    functions: int,
+    beneficiary_symbols: tuple[str, ...] = (),
+) -> AuthoredClassicRecord:
+    """Build one deterministic, payload-free forward-run-with-shape donor record.
+
+    The run is rendered at ``placement`` (``prefix`` or ``suffix``) exactly as a
+    forward-declaration-run donor renders it, and the declaration shape is
+    force-included ahead of the translation unit.  The pair reaches compiler
+    states neither half reaches alone.
+    """
+
+    try:
+        forward = generate_forward_run(prefix, count, width)
+        shape = generate_declaration_shape(classes, functions)
+        generated_digest = Digest.from_bytes(forward + shape).value
+        beneficiaries = _beneficiary_scopes(
+            target_id=target_id,
+            translation_unit_id=translation_unit_id,
+            symbols=beneficiary_symbols,
+        )
+        parameters: dict[str, JsonValue] = {
+            "classes": classes,
+            "count": count,
+            "emission_policy": "non_emitting_declarations_only",
+            "functions": functions,
+            "generated_header_sha256": generated_digest,
+            "placement": placement,
+            "prefix": prefix,
+            "width": width,
+        }
+        intervention_id = _stable_id(
+            "donor",
+            {
+                "build_target": build_target,
+                "family": ClassicRecipeFamily.FORWARD_RUN_WITH_SHAPE.value,
+                "parameters": parameters,
+                "target_id": target_id,
+                "translation_unit_id": translation_unit_id,
+            },
+        )
+        intervention = ClassicRecipeIntervention(
+            id=intervention_id,
+            scope=Scope(target=target_id, translation_unit=translation_unit_id),
+            rationale=_RUN_WITH_SHAPE_RATIONALE,
+            beneficiaries=beneficiaries,
+            family=ClassicRecipeFamily.FORWARD_RUN_WITH_SHAPE,
+            role=ClassicRecipeRole.DONOR,
+            build_target=build_target,
+            parameters=tuple(
+                ClassicField(name=name, value=value) for name, value in sorted(parameters.items())
+            ),
+        )
+        receipt = _record_receipt(intervention, {})
+        constraints = merge_candidate_constraints(intervention, receipt)
+        validation = validate_donor_recipe(intervention, constraints)
+        if validation.generated_declarations != forward + shape:
+            raise DiscoveryAuthoringError("validated donor declarations differ from their recipe")
+        return AuthoredClassicRecord(intervention, receipt)
+    except DiscoveryAuthoringError:
+        raise
+    except (DonorSourceError, ValidationError) as exc:
+        raise DiscoveryAuthoringError(f"invalid forward-run-with-shape donor: {exc}") from exc
 
 
 def build_declaration_shape_equal_body(

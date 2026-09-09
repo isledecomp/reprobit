@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from dataclasses import replace
 from hashlib import sha256
 from types import SimpleNamespace
@@ -836,3 +837,102 @@ def test_discovery_continues_with_pad_shapes_once_every_run_was_tried(
     }
     assert subject._carrier_states()[-1] == ("pad_shape", (8, 8))
     assert len(subject._pad_states()) == 64
+
+
+_SAVED_SHAPE_DONOR = _saved_donor
+
+
+def _saved_forward_run(count: int, placement: str = "suffix") -> ClassicRecipeIntervention:
+    generated = generate_forward_run("RbDsc", count, 3)
+    return _SAVED_SHAPE_DONOR(1, 1).model_copy(
+        update={
+            "family": ClassicRecipeFamily.FORWARD_DECLARATION_RUN,
+            "parameters": tuple(
+                ClassicField(name=name, value=value)
+                for name, value in sorted(
+                    {
+                        "count": count,
+                        "emission_policy": "non_emitting_declarations_only",
+                        "generated_header_sha256": Digest.from_bytes(generated).value,
+                        "placement": placement,
+                        "prefix": "RbDsc",
+                        "width": 3,
+                    }.items()
+                )
+            ),
+        }
+    )
+
+
+def test_discovery_pairs_a_saved_forward_run_with_shapes_before_pad_shapes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The refused record's own carrier is a forward run of 12 at the suffix; every
+    # shape, run and pad was tried before, so only the paired states remain.
+    monkeypatch.setattr(
+        sys.modules[__name__], "_saved_donor", lambda _c, _f: _saved_forward_run(12)
+    )
+    refusal, seed, goal = _fixture(
+        ClassicRecipeFamily.RETAIL_EXACT_RELOC_DIVERGENT, expected_body_sha256=GOAL_DIGEST
+    )
+    assert refusal.unit.donors[0].intervention.family is ClassicRecipeFamily.FORWARD_DECLARATION_RUN
+    compiled: list[str] = []
+    monkeypatch.setattr(
+        subject, "probe_donor_compile_windows", _fake_windows({"default": seed, 2: goal}, compiled)
+    )
+    tried = {
+        "shape::" + Digest.from_bytes(generate_declaration_shape(*shape)).value
+        for shape in subject._shape_states()
+    }
+    for count in range(1, 501):
+        digest = Digest.from_bytes(generate_forward_run("RbDsc", count, 3)).value
+        tried.update(
+            f"forward_run:{placement}:{digest}" for placement in subject._FORWARD_RUN_PLACEMENTS
+        )
+    tried.update(
+        "pad_shape::" + Digest.from_bytes(generate_pad_shape(*pad)).value
+        for pad in subject._pad_states()
+    )
+
+    result = subject.probe_carrier_discovery(
+        _Handle(),  # type: ignore[arg-type]
+        (refusal,),
+        clean_sources={"src/unit.cpp": SOURCE},
+        effective_sources={"src/unit.cpp": SOURCE},
+        per_unit=8,
+        window_size=1,
+        tried_states={"unit.fixture": frozenset(tried)},
+    )
+
+    assert result.compiled_candidates == 2
+    assert len(result.repairs) == 1
+    added = {item.intervention.role: item.intervention for item in result.repairs[0].additions}
+    donor = added[ClassicRecipeRole.DONOR]
+    assert donor.family is ClassicRecipeFamily.FORWARD_RUN_WITH_SHAPE
+    values = {f.name: f.value for f in donor.parameters}
+    # The saved run is kept whole; the cheapest shapes join it in order: (1,1) then (1,2).
+    assert (values["placement"], values["prefix"], values["count"], values["width"]) == (
+        "suffix",
+        "RbDsc",
+        12,
+        3,
+    )
+    assert (values["classes"], values["functions"]) == (1, 2)
+    expected = generate_forward_run("RbDsc", 12, 3) + generate_declaration_shape(1, 2)
+    assert values["generated_header_sha256"] == Digest.from_bytes(expected).value
+    assert [scope.function for scope in donor.beneficiaries] == [SYMBOL]
+    assert added[ClassicRecipeRole.FUNCTION].dependencies == (donor.id,)
+    first = generate_forward_run("RbDsc", 12, 3) + generate_declaration_shape(1, 1)
+    assert result.tried_states["unit.fixture"] == {
+        f"forward_run_with_shape::{Digest.from_bytes(first).value}",
+        f"forward_run_with_shape::{values['generated_header_sha256']}",
+    }
+    assert len(subject._combination_states(refusal.unit)) == subject._COMBINATION_SHAPE_LIMIT
+    assert subject._combination_states(refusal.unit)[0][1][1] == (1, 1)
+
+
+def test_discovery_pairs_nothing_when_the_unit_has_no_forward_run() -> None:
+    refusal, _seed, _goal = _fixture(
+        ClassicRecipeFamily.EQUAL_BODY_STRICT, expected_body_sha256=GOAL_DIGEST
+    )
+    assert subject._combination_states(refusal.unit) == []

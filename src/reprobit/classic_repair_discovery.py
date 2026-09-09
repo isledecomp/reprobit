@@ -30,6 +30,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from hashlib import sha256
+from typing import Any
 
 from reprobit.classic_donor_usage import direct_donor_consumers, donor_after_usage
 from reprobit.classic_donors import (
@@ -86,6 +87,7 @@ from reprobit.discovery_authoring import (
     REAUTHORABLE_FAMILIES,
     DiscoveryAuthoringError,
     build_declaration_shape_donor,
+    build_forward_run_with_shape_donor,
     build_measured_function_record,
     build_pad_shape_donor,
 )
@@ -112,6 +114,10 @@ _FORWARD_RUN_WIDTH = 3
 _FORWARD_RUN_PLACEMENTS = ("suffix", "prefix", "after_includes")
 _PAD_SHAPE_LIMIT = 8
 """Pad shapes are tried up to this many classes and members per class (64 states)."""
+_COMBINATION_SHAPE_LIMIT = 60
+"""A saved forward run is paired with this many of the cheapest declaration shapes."""
+_COMBINATION_RUN_LIMIT = 3
+"""At most this many of a unit's saved forward runs are paired with shapes."""
 _FORWARD_RUN_RATIONALE = (
     "Framework-generated declaration-only compiler-state carrier rendered with the translation "
     "unit; it contributes no code, data, strings, vtables, or linker directives."
@@ -185,6 +191,49 @@ def _pad_states() -> list[tuple[int, int]]:
     ]
     states.sort(key=lambda item: (item[0] + item[1], item[0]))
     return states
+
+
+def _saved_forward_runs(unit: ClassicPreparedUnit) -> list[tuple[str, str, int, int]]:
+    """``(placement, prefix, count, width)`` of the unit's saved forward runs a shape can join."""
+
+    runs: list[tuple[str, str, int, int]] = []
+    for item in unit.donors:
+        intervention = item.intervention
+        if intervention.family is not ClassicRecipeFamily.FORWARD_DECLARATION_RUN:
+            continue
+        values = {parameter.name: parameter.value for parameter in intervention.parameters}
+        placement = values.get("placement")
+        prefix, count, width = values.get("prefix"), values.get("count"), values.get("width")
+        if (
+            not isinstance(placement, str)
+            or placement not in ("prefix", "suffix")
+            or not isinstance(prefix, str)
+            or not isinstance(count, int)
+            or not isinstance(width, int)
+        ):
+            continue
+        runs.append((placement, prefix, count, width))
+        if len(runs) >= _COMBINATION_RUN_LIMIT:
+            break
+    return runs
+
+
+def _combination_states(
+    unit: ClassicPreparedUnit,
+) -> list[tuple[str, tuple[tuple[str, str, int, int], tuple[int, int]]]]:
+    """Every saved forward run of the unit paired with the cheapest declaration shapes.
+
+    A source edit can move a neighbour past the state one carrier reaches
+    while the run that carried it before the edit still contributes half of the
+    answer; the ``forward_run_with_shape`` family renders both halves in one
+    private compile.
+    """
+
+    return [
+        ("forward_run_with_shape", (run, shape))
+        for run in _saved_forward_runs(unit)
+        for shape in _shape_states()[:_COMBINATION_SHAPE_LIMIT]
+    ]
 
 
 def _carrier_states() -> list[tuple[str, tuple[int, int] | tuple[str, int]]]:
@@ -404,11 +453,38 @@ def _prepare_attempts(
                 entry.identities[probe_id] = _saved_carrier_identity(item)
                 entry.saved_attempts.add(probe_id)
                 ids.append(probe_id)
-        for kind, state in _carrier_states():
+        vocabulary: list[tuple[str, Any]] = list(_carrier_states())
+        first_pad = next(
+            (index for index, (kind, _state) in enumerate(vocabulary) if kind == "pad_shape"),
+            len(vocabulary),
+        )
+        vocabulary[first_pad:first_pad] = list(_combination_states(unit))
+        for kind, state in vocabulary:
             if len(ids) - len(entry.saved_attempts) >= per_unit:
                 break
             try:
-                if kind == "shape":
+                if kind == "forward_run_with_shape":
+                    (placement, prefix, count, width), (classes, functions) = state
+                    identity = _state_identity(
+                        kind,
+                        generate_forward_run(prefix, count, width)
+                        + generate_declaration_shape(classes, functions),
+                    )
+                    if identity in taken:
+                        continue
+                    record = build_forward_run_with_shape_donor(
+                        target_id=unit.plan.target_id,
+                        translation_unit_id=unit.plan.id,
+                        build_target=unit.plan.build_target,
+                        placement=placement,
+                        prefix=prefix,
+                        count=count,
+                        width=width,
+                        classes=classes,
+                        functions=functions,
+                    )
+                    intervention, receipt = record.intervention, record.receipt
+                elif kind == "shape":
                     classes, functions = int(state[0]), int(state[1])
                     identity = _state_identity(kind, generate_declaration_shape(classes, functions))
                     if identity in taken:
