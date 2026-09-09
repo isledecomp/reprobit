@@ -49,6 +49,24 @@ _SEARCH_BOUNDS = (
 )
 
 
+def repair_candidate_limit(candidate_limit: int | None, discovery_candidates: int | None) -> int:
+    """The command-wide candidate budget, grown to cover an explicit discovery budget.
+
+    Discovery states count against the same command-wide limit as nearby
+    retunes.  A user who raises only ``--discovery-candidates`` would otherwise
+    see the command stop at the default limit before discovery ever reached the
+    states they asked for, so the limit grows to hold that discovery budget plus
+    the default nearby budget.  An explicit ``--candidate-limit`` always wins.
+    """
+
+    if candidate_limit:
+        return candidate_limit
+    limit = DEFAULT_RETUNE_PROBE_CANDIDATES
+    if discovery_candidates:
+        limit = max(limit, discovery_candidates + DEFAULT_RETUNE_CANDIDATES)
+    return min(limit, MAX_RETUNE_PROBE_CANDIDATES)
+
+
 def _check_search_bounds(args: argparse.Namespace) -> None:
     for attribute, option, maximum in _SEARCH_BOUNDS:
         value = getattr(args, attribute, None)
@@ -88,7 +106,7 @@ def command_repair(args: argparse.Namespace, output: CLIOutput) -> int:
         policy=AuthenticityPolicy(args.policy) if args.policy is not None else None,
         retune_radius=args.retune_radius or DEFAULT_REPAIR_RETUNE_RADIUS,
         retune_candidates=args.retune_candidates or DEFAULT_RETUNE_CANDIDATES,
-        candidate_limit=args.candidate_limit or DEFAULT_RETUNE_PROBE_CANDIDATES,
+        candidate_limit=repair_candidate_limit(args.candidate_limit, args.discovery_candidates),
         adjustment_rounds=args.adjustment_rounds or MAX_REPAIR_ADJUSTMENT_ROUNDS,
         discovery_candidates=args.discovery_candidates or DEFAULT_DISCOVERY_CANDIDATES,
     )

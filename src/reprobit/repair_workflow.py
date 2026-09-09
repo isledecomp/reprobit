@@ -747,8 +747,13 @@ def _repair_unrecorded_functions(
             for unit_id, digests in getattr(discovery, "tried_states", {}).items():
                 state.discovered_shapes.setdefault(unit_id, set()).update(digests)
             if not discovery.repairs:
+                symbols = {
+                    refusal.intervention.id: refusal.intervention.symbol
+                    for refusal in census.refusals
+                    if getattr(getattr(refusal, "intervention", None), "symbol", None)
+                }
                 unresolved = ", ".join(
-                    f"{unit_id} {action_id}: {reason}"
+                    f"{unit_id} {symbols.get(action_id, action_id)}: {reason}"
                     for unit_id, action_id, reason in discovery.unresolved[:8]
                 )
                 raise RepairWorkflowError(

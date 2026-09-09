@@ -22,6 +22,7 @@ from reprobit.classic.composition import (
 from reprobit.classic_donors import (
     DonorSourceError,
     generate_declaration_shape,
+    generate_extern_run,
     generate_forward_run,
     generate_pad_shape,
     merge_candidate_constraints,
@@ -57,6 +58,10 @@ _RUN_WITH_SHAPE_RATIONALE = (
     "Framework-generated declaration-only compiler-state carrier: a forward-declaration run "
     "seated at the translation unit's prefix or suffix plus a declaration shape force-included; "
     "neither half contributes code, data, strings, vtables, or linker directives."
+)
+_EXTERN_RUN_RATIONALE = (
+    "Framework-generated extern declarations seated after the final include and at physical "
+    "EOF; they emit no code, data, strings, vtables, linker payload, or retained object input."
 )
 _FUNCTION_RATIONALE = (
     "Strict equal-size COMDAT body selection from a freshly compiled private donor."
@@ -387,6 +392,79 @@ def build_forward_run_with_shape_donor(
         raise
     except (DonorSourceError, ValidationError) as exc:
         raise DiscoveryAuthoringError(f"invalid forward-run-with-shape donor: {exc}") from exc
+
+
+def build_extern_run_donor(
+    *,
+    target_id: str,
+    translation_unit_id: str,
+    build_target: str,
+    header_prefix: str,
+    header_count: int,
+    seat_prefix: str,
+    seat_count: int,
+    width: int,
+    beneficiary_symbols: tuple[str, ...] = (),
+) -> AuthoredClassicRecord:
+    """Build one deterministic, payload-free extern-run donor record without a role policy.
+
+    The header run is seated after the translation unit's final include and
+    the seat run at physical EOF; either count may be zero but not both.  The
+    record carries no ``role_policy``, so any equal-body consumer may host on it.
+    """
+
+    try:
+        header = generate_extern_run(header_prefix, header_count, width) if header_count else b""
+        seat = generate_extern_run(seat_prefix, seat_count, width) if seat_count else b""
+        generated = header + seat
+        if not generated:
+            raise DiscoveryAuthoringError("extern-run donor must contain a declaration")
+        beneficiaries = _beneficiary_scopes(
+            target_id=target_id,
+            translation_unit_id=translation_unit_id,
+            symbols=beneficiary_symbols,
+        )
+        parameters: dict[str, JsonValue] = {
+            "emission_policy": "non_emitting_declarations_only",
+            "generated_header_sha256": Digest.from_bytes(generated).value,
+            "header_count": header_count,
+            "header_prefix": header_prefix,
+            "seat_count": seat_count,
+            "seat_prefix": seat_prefix,
+            "width": width,
+        }
+        intervention_id = _stable_id(
+            "donor",
+            {
+                "build_target": build_target,
+                "family": ClassicRecipeFamily.EXTERN_RUN_PAIR.value,
+                "parameters": parameters,
+                "target_id": target_id,
+                "translation_unit_id": translation_unit_id,
+            },
+        )
+        intervention = ClassicRecipeIntervention(
+            id=intervention_id,
+            scope=Scope(target=target_id, translation_unit=translation_unit_id),
+            rationale=_EXTERN_RUN_RATIONALE,
+            beneficiaries=beneficiaries,
+            family=ClassicRecipeFamily.EXTERN_RUN_PAIR,
+            role=ClassicRecipeRole.DONOR,
+            build_target=build_target,
+            parameters=tuple(
+                ClassicField(name=name, value=value) for name, value in sorted(parameters.items())
+            ),
+        )
+        receipt = _record_receipt(intervention, {})
+        constraints = merge_candidate_constraints(intervention, receipt)
+        validation = validate_donor_recipe(intervention, constraints)
+        if validation.generated_declarations != generated:
+            raise DiscoveryAuthoringError("validated donor declarations differ from their recipe")
+        return AuthoredClassicRecord(intervention, receipt)
+    except DiscoveryAuthoringError:
+        raise
+    except (DonorSourceError, ValidationError) as exc:
+        raise DiscoveryAuthoringError(f"invalid extern-run donor: {exc}") from exc
 
 
 def build_declaration_shape_equal_body(

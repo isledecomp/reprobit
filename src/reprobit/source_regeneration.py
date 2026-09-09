@@ -83,8 +83,21 @@ class ProjectSourceReader:
         return data
 
     def read_clean_preimage(self, relative: str, *, expected_sha256: str) -> bytes | None:
-        """Return the matching clean blob saved at Git HEAD, when available."""
+        """Return the matching clean bytes of ``relative`` from the preimage root.
 
+        The clean preimage root is either the project itself, whose committed
+        blob at Git HEAD is the clean input, or an exact copy of the committed
+        tree that may carry no Git metadata at all.  Both are tried; a
+        candidate counts only when its digest is the recorded one.
+        """
+
+        candidate = self._clean_preimage_root / relative
+        try:
+            data = candidate.read_bytes()
+        except OSError:
+            data = None
+        if data is not None and sha256(data).hexdigest() == expected_sha256:
+            return data
         try:
             completed = subprocess.run(
                 (

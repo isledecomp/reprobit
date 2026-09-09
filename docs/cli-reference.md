@@ -395,8 +395,8 @@ Widen the bounded search for larger repairs; a completed repair must still repro
 |---|---|---|
 | `--retune-radius` `DISTANCE` |  | largest declaration-count change tried per saved compiler choice or source layout (default: 8; max: 64) |
 | `--retune-candidates` `COUNT` |  | maximum nearby settings tried per saved compiler choice or source layout (default: 64; max: 4096) |
-| `--candidate-limit` `COUNT` |  | maximum nearby repair choices tested by the whole command (default: 256; max: 65536) |
-| `--discovery-candidates` `COUNT` |  | fresh declaration settings built per affected source file after its saved compiler choices are exhausted (default: 64; max: 2069) |
+| `--candidate-limit` `COUNT` |  | maximum nearby repair choices tested by the whole command (default: 256, or enough to hold an explicit --discovery-candidates budget; max: 65536) |
+| `--discovery-candidates` `COUNT` |  | fresh declaration settings built per affected source file after its saved compiler choices are exhausted (default: 64; max: 2133) |
 | `--adjustment-rounds` `COUNT` |  | maximum saved-guidance adjustment rounds before repair stops (default: 24) |
 
 ### `rbit build`

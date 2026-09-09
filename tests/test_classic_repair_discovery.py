@@ -12,6 +12,7 @@ import test_classic_register_bijection_reencoding_full as coff_fixture
 import reprobit.classic_repair_discovery as subject
 from reprobit.classic_donors import (
     generate_declaration_shape,
+    generate_extern_run,
     generate_forward_run,
     generate_pad_shape,
     prepare_donor_compile_request,
@@ -936,3 +937,185 @@ def test_discovery_pairs_nothing_when_the_unit_has_no_forward_run() -> None:
         ClassicRecipeFamily.EQUAL_BODY_STRICT, expected_body_sha256=GOAL_DIGEST
     )
     assert subject._combination_states(refusal.unit) == []
+
+
+def test_discovery_replaces_an_fpo_permutation_mosaic_with_an_exact_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The mosaic's extra parameters are only the FPO self-permutation proof;
+    # a fresh carrier that emits the retail body exactly makes it unnecessary.
+    refusal, _seed, goal = _fixture(
+        ClassicRecipeFamily.RETAIL_EXACT_INSTRUCTION_MOSAIC,
+        expected_body_sha256=GOAL_DIGEST,
+    )
+    action = refusal.intervention.model_copy(
+        update={
+            "parameters": (
+                ClassicField(name="instruction_ranges", value=[]),
+                ClassicField(name="instruction_self_permutation", value={"kind": "fixture"}),
+                ClassicField(name="ordinary_fpo_identity", value=True),
+                ClassicField(name="same_function_source_identity", value=True),
+            )
+        }
+    )
+    receipt = refusal.receipt.model_copy(update={"family": action.family})
+    unit = replace(
+        refusal.unit,
+        functions=(action,),
+        actions=(action,),
+        receipts=tuple(
+            receipt if item.intervention_id == action.id else item for item in refusal.unit.receipts
+        ),
+    )
+    guarded = replace(
+        refusal, intervention=action, receipt=receipt, unit=unit, retail_body=_body(goal)
+    )
+    monkeypatch.setattr(
+        subject,
+        "reauthor_instruction_mosaic",
+        lambda *_a, **_k: (_ for _ in ()).throw(subject.MosaicRepairError("fixture refusal")),
+    )
+    monkeypatch.setattr(
+        subject, "probe_donor_compile_windows", _fake_windows({"default": goal}, [])
+    )
+
+    result = subject.probe_carrier_discovery(
+        _Handle(),  # type: ignore[arg-type]
+        (guarded,),
+        clean_sources={"src/unit.cpp": SOURCE},
+        effective_sources={"src/unit.cpp": SOURCE},
+        per_unit=1,
+        window_size=1,
+    )
+
+    assert result.unresolved == ()
+    assert [item.how for item in result.repairs[0].resolutions] == ["reauthor"]
+    assert result.repairs[0].resolutions[0].family == ClassicRecipeFamily.EQUAL_BODY_STRICT.value
+    added = {item.intervention.role: item.intervention for item in result.repairs[0].additions}
+    assert added[ClassicRecipeRole.FUNCTION].family is ClassicRecipeFamily.EQUAL_BODY_STRICT
+    assert {edit.before.id for edit in result.repairs[0].intervention_edits} == {
+        "function.saved",
+        "donor.saved",
+    }
+
+
+def _saved_extern_run(
+    header_count: int, seat_count: int, policy: str | None
+) -> ClassicRecipeIntervention:
+    generated = (generate_extern_run("g_h", header_count, 2) if header_count else b"") + (
+        generate_extern_run("g_p", seat_count, 2) if seat_count else b""
+    )
+    values: dict[str, object] = {
+        "emission_policy": "non_emitting_declarations_only",
+        "generated_header_sha256": Digest.from_bytes(generated).value,
+        "header_count": header_count,
+        "header_prefix": "g_h",
+        "seat_count": seat_count,
+        "seat_prefix": "g_p",
+        "width": 2,
+    }
+    if policy is not None:
+        values["role_policy"] = policy
+    return _SAVED_SHAPE_DONOR(1, 1).model_copy(
+        update={
+            "family": ClassicRecipeFamily.EXTERN_RUN_PAIR,
+            "parameters": tuple(
+                ClassicField(name=name, value=value) for name, value in sorted(values.items())
+            ),
+        }
+    )
+
+
+def test_saved_state_identity_keeps_a_role_policy_apart_from_its_unpolicied_twin() -> None:
+    bound = _saved_extern_run(32, 2, "retail_exact_instruction_mosaic_fpo_only_v1")
+    free = _saved_extern_run(32, 2, None)
+    assert subject._saved_state_identity(bound) != subject._saved_state_identity(free)
+    assert subject._saved_state_identity(free) == subject._state_identity(
+        "extern_run_pair", generate_extern_run("g_h", 32, 2) + generate_extern_run("g_p", 2, 2)
+    )
+
+
+def test_discovery_tries_the_unpolicied_twin_of_a_bound_extern_run_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        sys.modules[__name__],
+        "_saved_donor",
+        # An EOF-only seat: the fixture source has no include for a header run.
+        lambda _c, _f: _saved_extern_run(0, 2, "retail_exact_instruction_mosaic_fpo_only_v1"),
+    )
+    refusal, _seed, goal = _fixture(
+        ClassicRecipeFamily.RETAIL_EXACT_RELOC_DIVERGENT, expected_body_sha256=GOAL_DIGEST
+    )
+    compiled: list[str] = []
+    # The first fresh state is the twin; it carries the goal at once.
+    monkeypatch.setattr(
+        subject, "probe_donor_compile_windows", _fake_windows({"default": _seed, 1: goal}, compiled)
+    )
+
+    result = subject.probe_carrier_discovery(
+        _Handle(),  # type: ignore[arg-type]
+        (refusal,),
+        clean_sources={"src/unit.cpp": SOURCE},
+        effective_sources={"src/unit.cpp": SOURCE},
+        per_unit=4,
+        window_size=1,
+    )
+
+    assert result.compiled_candidates == 1
+    added = {item.intervention.role: item.intervention for item in result.repairs[0].additions}
+    donor = added[ClassicRecipeRole.DONOR]
+    assert donor.family is ClassicRecipeFamily.EXTERN_RUN_PAIR
+    values = {f.name: f.value for f in donor.parameters}
+    assert "role_policy" not in values
+    assert (
+        values["header_prefix"],
+        values["header_count"],
+        values["seat_prefix"],
+        values["seat_count"],
+        values["width"],
+    ) == ("g_h", 0, "g_p", 2, 2)
+
+
+def test_discovery_continues_with_extern_runs_after_forward_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    refusal, seed, goal = _fixture(
+        ClassicRecipeFamily.RETAIL_EXACT_RELOC_DIVERGENT, expected_body_sha256=GOAL_DIGEST
+    )
+    compiled: list[str] = []
+    monkeypatch.setattr(
+        subject, "probe_donor_compile_windows", _fake_windows({"default": seed, 2: goal}, compiled)
+    )
+    tried = {
+        "shape::" + Digest.from_bytes(generate_declaration_shape(*shape)).value
+        for shape in subject._shape_states()
+    }
+    for count in range(1, 501):
+        digest = Digest.from_bytes(generate_forward_run("RbDsc", count, 3)).value
+        tried.update(
+            f"forward_run:{placement}:{digest}" for placement in subject._FORWARD_RUN_PLACEMENTS
+        )
+
+    # A header extern run seats after the unit's last include, so the unit needs one.
+    included = b"#include <fixture.h>\n" + SOURCE
+    result = subject.probe_carrier_discovery(
+        _Handle(),  # type: ignore[arg-type]
+        (refusal,),
+        clean_sources={"src/unit.cpp": included},
+        effective_sources={"src/unit.cpp": included},
+        per_unit=8,
+        window_size=1,
+        tried_states={"unit.fixture": frozenset(tried)},
+    )
+
+    assert result.compiled_candidates == 2
+    added = {item.intervention.role: item.intervention for item in result.repairs[0].additions}
+    donor = added[ClassicRecipeRole.DONOR]
+    assert donor.family is ClassicRecipeFamily.EXTERN_RUN_PAIR
+    values = {f.name: f.value for f in donor.parameters}
+    assert (values["header_count"], values["seat_count"]) == (2, 0)
+    assert values["header_prefix"] == subject._EXTERN_RUN_PREFIX + "H"
+    assert "role_policy" not in values
+    assert subject._carrier_states()[505 + 1500] == ("extern_run", (1, 0))
+    assert len(subject._extern_run_states()) == 64

@@ -1075,7 +1075,8 @@ def _parser() -> argparse.ArgumentParser:
         metavar="COUNT",
         help=(
             "maximum nearby repair choices tested by the whole command "
-            f"(default: {DEFAULT_RETUNE_PROBE_CANDIDATES}; max: {MAX_RETUNE_PROBE_CANDIDATES})"
+            f"(default: {DEFAULT_RETUNE_PROBE_CANDIDATES}, or enough to hold an explicit "
+            f"--discovery-candidates budget; max: {MAX_RETUNE_PROBE_CANDIDATES})"
         ),
     )
     search.add_argument(

@@ -11,8 +11,9 @@ DEFAULT_RETUNE_CANDIDATES = 64
 MAX_RETUNE_CANDIDATES = 4096
 
 DEFAULT_DISCOVERY_CANDIDATES = 64
-# 505 declaration shapes, runs of 1..500 at each of three placements, then 64 pad shapes.
-MAX_DISCOVERY_CANDIDATES = 2069
+# 505 declaration shapes, runs of 1..500 at each of three placements, 64 extern runs,
+# then 64 pad shapes.
+MAX_DISCOVERY_CANDIDATES = 2133
 DEFAULT_DISCOVERY_WINDOW = 8
 
 DEFAULT_RETUNE_PROBE_WINDOW = 8

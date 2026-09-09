@@ -279,3 +279,38 @@ def test_source_regeneration_refuses_an_unproven_token_seat(
 
     with pytest.raises(ValueError, match="cannot be re-rendered"):
         _refresh_source_overlays(_context(tmp_path, _output()))
+
+
+def test_source_regeneration_reads_the_preimage_from_a_plain_copy_without_git(
+    tmp_path: Path,
+) -> None:
+    # An exact copy of the committed tree (an rsync of the checkout, say) carries
+    # no Git metadata; the digest-checked file is the same clean input.
+    original_root = tmp_path / "copy"
+    original_source = original_root / _PATH
+    original_source.parent.mkdir(parents=True)
+    original_source.write_bytes(_ORIGINAL)
+
+    staged_root = tmp_path / "staged"
+    staged_source = staged_root / _PATH
+    staged_source.parent.mkdir(parents=True)
+    staged_source.write_bytes(_EDITED)
+    output = _output()
+    old_context = output["ops"][0]["anchor"]["ctx"]
+
+    _refresh_source_overlays(_context(staged_root, output, clean_preimage_root=original_root))
+
+    assert output["ops"][0]["anchor"]["ctx"] != old_context
+    assert output["clean"] == digest_bytes(_EDITED)
+    rendered = render_classic_overlay_proposal([output], {_PATH: _EDITED}).outputs[_PATH]
+    assert rendered.index(b"int beta;") < rendered.index(b"class Spare;")
+
+
+def test_source_regeneration_ignores_a_plain_copy_whose_digest_differs(tmp_path: Path) -> None:
+    original_root = tmp_path / "copy"
+    original_source = original_root / _PATH
+    original_source.parent.mkdir(parents=True)
+    original_source.write_bytes(_EDITED)  # not the recorded clean input
+    reader = ProjectSourceReader(tmp_path / "staged", clean_preimage_root=original_root)
+    assert reader.read_clean_preimage(_PATH, expected_sha256=digest_bytes(_ORIGINAL)) is None
+    assert reader.read_clean_preimage(_PATH, expected_sha256=digest_bytes(_EDITED)) == _EDITED

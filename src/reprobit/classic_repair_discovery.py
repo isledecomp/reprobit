@@ -36,6 +36,7 @@ from reprobit.classic_donor_usage import direct_donor_consumers, donor_after_usa
 from reprobit.classic_donors import (
     DonorSourceError,
     generate_declaration_shape,
+    generate_extern_run,
     generate_forward_run,
     generate_pad_shape,
     merge_candidate_constraints,
@@ -87,6 +88,7 @@ from reprobit.discovery_authoring import (
     REAUTHORABLE_FAMILIES,
     DiscoveryAuthoringError,
     build_declaration_shape_donor,
+    build_extern_run_donor,
     build_forward_run_with_shape_donor,
     build_measured_function_record,
     build_pad_shape_donor,
@@ -118,6 +120,25 @@ _COMBINATION_SHAPE_LIMIT = 60
 """A saved forward run is paired with this many of the cheapest declaration shapes."""
 _COMBINATION_RUN_LIMIT = 3
 """At most this many of a unit's saved forward runs are paired with shapes."""
+_PERMUTATION_PROOF_KEYS = frozenset(
+    {
+        "instruction_self_permutation",
+        "ordinary_fpo_identity",
+        "relocation_order",
+        "same_function_source_identity",
+        "source_fpo_identity",
+    }
+)
+"""Mosaic parameters that only describe how its instruction permutation was proved.
+
+A mosaic whose extra semantics are nothing but these keys loses no intent when a
+carrier emits the retail body exactly: the permutation was the means, the body
+the end.  ``target_source_refactor`` records an intent and is never downgraded.
+"""
+_EXTERN_RUN_LIMIT = 64
+"""Extern runs after the includes are tried up to this many declarations (64 states)."""
+_EXTERN_RUN_PREFIX = "RbExt"
+_EXTERN_RUN_WIDTH = 3
 _FORWARD_RUN_RATIONALE = (
     "Framework-generated declaration-only compiler-state carrier rendered with the translation "
     "unit; it contributes no code, data, strings, vtables, or linker directives."
@@ -218,6 +239,46 @@ def _saved_forward_runs(unit: ClassicPreparedUnit) -> list[tuple[str, str, int, 
     return runs
 
 
+def _extern_run_states() -> list[tuple[int, int]]:
+    """Header extern runs of 1..limit declarations after the includes, no EOF seat."""
+
+    return [(count, 0) for count in range(1, _EXTERN_RUN_LIMIT + 1)]
+
+
+def _policied_extern_twins(unit: ClassicPreparedUnit) -> list[tuple[str, int, str, int, int]]:
+    """The unit's role-bound extern runs, restated without their policy.
+
+    A carrier confined to one mosaic role often emits a neighbour's exact body
+    as well; the same declarations without the policy let an equal-body record
+    host on them.
+    """
+
+    twins: list[tuple[str, int, str, int, int]] = []
+    for item in unit.donors:
+        intervention = item.intervention
+        if intervention.family is not ClassicRecipeFamily.EXTERN_RUN_PAIR:
+            continue
+        values = {parameter.name: parameter.value for parameter in intervention.parameters}
+        if not isinstance(values.get("role_policy"), str):
+            continue
+        header_prefix, seat_prefix = values.get("header_prefix"), values.get("seat_prefix")
+        header_count, seat_count, width = (
+            values.get("header_count"),
+            values.get("seat_count"),
+            values.get("width"),
+        )
+        if (
+            not isinstance(header_prefix, str)
+            or not isinstance(seat_prefix, str)
+            or not isinstance(header_count, int)
+            or not isinstance(seat_count, int)
+            or not isinstance(width, int)
+        ):
+            continue
+        twins.append((header_prefix, header_count, seat_prefix, seat_count, width))
+    return twins
+
+
 def _combination_states(
     unit: ClassicPreparedUnit,
 ) -> list[tuple[str, tuple[tuple[str, str, int, int], tuple[int, int]]]]:
@@ -252,6 +313,7 @@ def _carrier_states() -> list[tuple[str, tuple[int, int] | tuple[str, int]]]:
     for count in range(1, 501):
         for placement in _FORWARD_RUN_PLACEMENTS:
             states.append(("forward_run", (placement, count)))
+    states.extend(("extern_run", run) for run in _extern_run_states())
     states.extend(("pad_shape", pad) for pad in _pad_states())
     return states
 
@@ -320,7 +382,10 @@ def _saved_state_identity(intervention: ClassicRecipeIntervention) -> str | None
         return f"shape::{digest}"
     if intervention.family is ClassicRecipeFamily.FORWARD_DECLARATION_RUN:
         return f"forward_run:{values.get('placement')}:{digest}"
-    return f"{intervention.family.value}::{digest}"
+    # A role policy confines the donor's consumers; the same declarations without
+    # the policy are a different state for discovery, one any consumer may host on.
+    policy = values.get("role_policy")
+    return f"{intervention.family.value}:{policy if isinstance(policy, str) else ''}:{digest}"
 
 
 def _existing_state_identities(unit: ClassicPreparedUnit) -> set[str]:
@@ -459,11 +524,43 @@ def _prepare_attempts(
             len(vocabulary),
         )
         vocabulary[first_pad:first_pad] = list(_combination_states(unit))
+        # The unpolicied twins of the unit's role-bound extern runs come first: the
+        # saved carrier already showed which state the unit's functions want.
+        vocabulary[0:0] = [("extern_twin", twin) for twin in _policied_extern_twins(unit)]
         for kind, state in vocabulary:
             if len(ids) - len(entry.saved_attempts) >= per_unit:
                 break
             try:
-                if kind == "forward_run_with_shape":
+                if kind in {"extern_run", "extern_twin"}:
+                    if kind == "extern_twin":
+                        header_prefix, header_count, seat_prefix, seat_count, width = state
+                    else:
+                        header_count, seat_count = state
+                        header_prefix, seat_prefix, width = (
+                            _EXTERN_RUN_PREFIX + "H",
+                            _EXTERN_RUN_PREFIX + "S",
+                            _EXTERN_RUN_WIDTH,
+                        )
+                    generated = (
+                        generate_extern_run(header_prefix, header_count, width)
+                        if header_count
+                        else b""
+                    ) + (generate_extern_run(seat_prefix, seat_count, width) if seat_count else b"")
+                    identity = _state_identity("extern_run_pair", generated)
+                    if identity in taken:
+                        continue
+                    record = build_extern_run_donor(
+                        target_id=unit.plan.target_id,
+                        translation_unit_id=unit.plan.id,
+                        build_target=unit.plan.build_target,
+                        header_prefix=header_prefix,
+                        header_count=header_count,
+                        seat_prefix=seat_prefix,
+                        seat_count=seat_count,
+                        width=width,
+                    )
+                    intervention, receipt = record.intervention, record.receipt
+                elif kind == "forward_run_with_shape":
                     (placement, prefix, count, width), (classes, functions) = state
                     identity = _state_identity(
                         kind,
@@ -531,7 +628,10 @@ def _prepare_attempts(
                 entry.reasons.setdefault("preparation", str(exc))
                 continue
             seat = request.compiler_seat.casefold()
-            if seat in seats:
+            # A twin renders the very inputs its role-bound original renders, so
+            # it shares that arena; it is compiled anyway because the original may
+            # not host the consumer and the twin can.
+            if seat in seats and kind != "extern_twin":
                 continue
             seats.add(seat)
             probe_id = f"discovery_probe_{ordinal:04d}"
@@ -624,7 +724,16 @@ def _try_resolve(
                     ),
                 )
             entry.reasons[action.id] = "bounded mosaic did not use the discovered carrier"
-    if semantic_mosaic:
+    permutation_only = semantic_mosaic and (
+        {parameter.name for parameter in action.parameters}
+        - {"instruction_ranges", "donor_variants"}
+        <= _PERMUTATION_PROOF_KEYS
+    )
+    if semantic_mosaic and not (permutation_only and goal is not None and body == goal):
+        # A mosaic that only permutes instructions keeps its intent while the
+        # retail body is out of reach; a donor that emits that body exactly makes
+        # the permutation unnecessary, so the cheapest equal-body family may host it.
+        # A mosaic that records a source-refactor intent is never downgraded.
         reason = entry.reasons.get(action.id)
         entry.reasons[action.id] = "saved mosaic semantics could not be preserved" + (
             f" ({reason})" if reason else ""
