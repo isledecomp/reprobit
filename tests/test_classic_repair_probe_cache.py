@@ -780,3 +780,34 @@ def test_ordered_stream_bounds_cache_hits_behind_a_slow_predecessor(
     assert result[:2] == ("1", "0")  # Completion reporting remains responsive.
     assert len(result) == len(prepared) and set(result) == set(prepared)
     assert delivered == list(prepared)
+
+
+def test_reported_total_grows_when_in_flight_compiles_outrun_the_plan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The planned count is an upper bound estimated before the windows are pulled;
+    a compile already running when the plan is reached still lands, and the
+    progress event must never report more completed work than its total."""
+
+    monkeypatch.setattr(subject, "_compile_output", lambda *args: _output(args[-1]))
+    prepared = {f"probe_{index}": (_unit(f"seat-{index}"), 0) for index in range(3)}
+    reported: list[tuple[int, int, str]] = []
+
+    outcomes = subject._stream_compiles(
+        SimpleNamespace(),
+        prepared,
+        object(),  # type: ignore[arg-type]
+        object(),  # type: ignore[arg-type]
+        object(),  # type: ignore[arg-type]
+        iter([("probe_0", "probe_1"), ("probe_2",)]),
+        evaluate=lambda outcomes: False,
+        progress=lambda completed, total, donor_id: reported.append((completed, total, donor_id)),
+        planned_candidates=2,
+        cache=None,
+        epoch="epoch-a",
+        jobs=2,
+    )
+
+    assert sorted(outcomes) == ["probe_0", "probe_1", "probe_2"]
+    assert all(completed <= total for completed, total, _ in reported)
+    assert [(completed, total) for completed, total, _ in reported] == [(1, 2), (2, 2), (3, 3)]

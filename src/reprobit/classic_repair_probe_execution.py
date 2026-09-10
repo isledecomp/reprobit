@@ -264,7 +264,11 @@ def _stream_compiles(
     def deliver(outcome: ClassicDonorCompileOutcome) -> None:
         donor_ids.append(outcome.donor_id)
         if progress is not None:
-            progress(len(donor_ids), planned_candidates, outcome.donor_id)
+            # ``planned_candidates`` is an upper bound estimated before the
+            # windows were pulled; compiles already in flight when the plan is
+            # reached still land and are recorded, so the reported total must
+            # grow with them rather than let the count overrun it.
+            progress(len(donor_ids), max(planned_candidates, len(donor_ids)), outcome.donor_id)
         if not ordered_outcomes:
             record(outcome)
             return
