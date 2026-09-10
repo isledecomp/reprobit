@@ -817,13 +817,22 @@ def apply_classic_authority_edits(
             )
     added_ids = [item.intervention.id for item in additions]
     added_receipt_ids = [item.receipt.id for item in additions]
-    if (
-        len(set(added_ids)) != len(added_ids)
-        or set(added_ids) & set(intervention_edits)
-        or len(set(added_receipt_ids)) != len(added_receipt_ids)
-        or set(added_receipt_ids) & set(receipt_edits)
-    ):
-        raise ClassicAuthorityRepairError("record additions repeat an identifier")
+    repeated = sorted(
+        {name for name in added_ids if added_ids.count(name) > 1}
+        | (set(added_ids) & set(intervention_edits))
+        | {name for name in added_receipt_ids if added_receipt_ids.count(name) > 1}
+        | (set(added_receipt_ids) & set(receipt_edits))
+    )
+    if repeated:
+        detail = "; ".join(
+            f"{item.intervention.id} ({item.intervention.symbol or '?'}, replaces "
+            f"{item.replaces_intervention_id or 'nothing'})"
+            for item in additions
+            if item.intervention.id in repeated or item.receipt.id in repeated
+        )
+        raise ClassicAuthorityRepairError(
+            "record additions repeat an identifier: " + ", ".join(repeated) + "; " + detail
+        )
     replacements_by_intervention: dict[str, ClassicRecordAddition] = {}
     replacements_by_receipt: dict[str, ClassicRecordAddition] = {}
     for addition in additions:

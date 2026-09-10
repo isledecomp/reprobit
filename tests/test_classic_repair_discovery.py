@@ -1119,3 +1119,29 @@ def test_discovery_continues_with_extern_runs_after_forward_runs(
     assert "role_policy" not in values
     assert subject._carrier_states()[505 + 1500] == ("extern_run", (1, 0))
     assert len(subject._extern_run_states()) == 64
+
+
+def test_reauthoring_a_record_to_itself_changes_nothing() -> None:
+    """A fresh state can re-author the very record that was refused: same donor,
+    same family, same measured pins, hence the same stable identifiers.  That is a
+    restatement, and the authority refuses a transaction that removes and adds one
+    identifier, so the unit repair must settle the refusal without any edit."""
+
+    refusal, _seed, _goal = _fixture(ClassicRecipeFamily.EQUAL_BODY_STRICT)
+    action = refusal.intervention
+    resolution = subject.ClassicDiscoveryResolution(
+        action.id, SYMBOL, "donor.saved", "reauthor", action.family.value
+    )
+    restatement = subject.ClassicRecordAddition(
+        action, refusal.receipt, replaces_intervention_id=action.id
+    )
+    entry = subject._UnitWork(refusal.unit, [refusal], [], {action.id: (resolution, restatement)}, {}, {})
+
+    repair = subject._unit_repair(entry)
+
+    assert repair is not None
+    assert repair.resolutions == (resolution,)
+    assert repair.additions == ()
+    assert repair.intervention_edits == ()
+    assert repair.receipt_edits == ()
+    assert repair.dependency_edits == ()

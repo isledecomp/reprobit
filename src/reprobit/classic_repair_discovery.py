@@ -917,11 +917,18 @@ def _unit_repair(entry: _UnitWork) -> ClassicDiscoveryRepair | None:
             after_receipt = product.receipt
         elif resolution.how == "reauthor":
             assert isinstance(product, ClassicRecordAddition)
-            additions.append(product)
-            intervention_edits.append(ClassicInterventionEdit(action, None))
             old_receipt = receipts.get(action.id)
             if old_receipt is None:
                 raise ClassicDiscoveryProbeError(f"refused action {action.id!r} has no receipt")
+            if product.intervention.id == action.id and product.receipt.id == old_receipt.id:
+                # The fresh state re-authored the very record that was refused:
+                # same donor, same family, same measured pins, so the same stable
+                # identifiers.  That is a restatement of the saved guidance, not
+                # a change; removing and re-adding one identifier is not a
+                # transaction the authority accepts, and there is nothing to move.
+                continue
+            additions.append(product)
+            intervention_edits.append(ClassicInterventionEdit(action, None))
             receipt_edits.append(ClassicReceiptEdit(old_receipt, None))
             before_donors = classic_function_donor_ids(action, refusal.receipt)
             after_action = product.intervention
