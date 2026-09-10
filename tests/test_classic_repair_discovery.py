@@ -1135,7 +1135,16 @@ def test_reauthoring_a_record_to_itself_changes_nothing() -> None:
     restatement = subject.ClassicRecordAddition(
         action, refusal.receipt, replaces_intervention_id=action.id
     )
-    entry = subject._UnitWork(refusal.unit, [refusal], [], {action.id: (resolution, restatement)}, {}, {})
+    saved_donor = refusal.unit.donors[0].intervention
+    entry = subject._UnitWork(
+        refusal.unit,
+        [refusal],
+        [],
+        {action.id: (resolution, restatement)},
+        {saved_donor.id: saved_donor},  # the fresh state re-discovered the saved carrier
+        {},
+        receipts={saved_donor.id: refusal.unit.receipts[0]},
+    )
 
     repair = subject._unit_repair(entry)
 

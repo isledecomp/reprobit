@@ -963,6 +963,11 @@ def _unit_repair(entry: _UnitWork) -> ClassicDiscoveryRepair | None:
             else:
                 donor_beneficiaries[donor_id].add(symbol)
     for donor_id, donor in entry.kept_donors.items():
+        if donor_id in saved_donors or not donor_beneficiaries[donor_id]:
+            # A fresh state that re-discovered one of the unit's saved carriers
+            # is that saved record (same stable identifier); a kept donor no
+            # resolution ended up on has nothing to carry.  Neither is added.
+            continue
         scopes = tuple(
             Scope(target=target_id, translation_unit=unit.plan.id, function=symbol)
             for symbol in sorted(donor_beneficiaries[donor_id])
